@@ -1,37 +1,49 @@
 #!/bin/bash
 
+### Клиент AmneziaWG 3.1 в том же виде, что warp-native поднимал WireGuard:
+### интерфейс без маршрута по умолчанию (Table = off), трафик только если
+### приложение само выбрало интерфейс, fail-closed kill-switch по метке.
+
+IFACE="awg"
+CONF_DIR="/etc/amnezia/amneziawg"
+CONF_FILE="${CONF_DIR}/${IFACE}.conf"
+STATE_DIR="/opt/awg-native"
+UNIT="awg-quick@${IFACE}"
+MARK="51888"
+PPA_LIST="/etc/apt/sources.list.d/amnezia-ppa.list"
+PPA_KEYRING="/etc/apt/keyrings/amnezia-ppa.gpg"
+PPA_KEY_ID="75C9DD72C799870E310542E24166F2C257290828"
+
 SCRIPT_LANG=""
-
-### IPv4 endpoint WARP — прибит принудительно, чтобы не зависеть от DNS (имя резолвится и в IPv6)
-WARP_ENDPOINT_V4="162.159.192.1:2408"
-
-### Файлы wgcf держим в директории проекта
-WGCF_DIR="/opt/warp-native/wgcf"
+CONF_ARG=""
+PREPARE_ERROR=""
+PREPARE_DETAIL=""
+PREPARE_STRIPPED_HOOKS=0
 
 function select_language {
     echo -e "\n\e[1;35m╭─────────────────────────────────────╮"
-    echo -e "│      \e[1;36m  W A R P - N A T I V E        \e[1;35m│"
-    echo -e "│     \e[2;37m       by distillium            \e[1;35m│"
+    echo -e "│      \e[1;36m   A W G - N A T I V E         \e[1;35m│"
+    echo -e "│     \e[2;37m      AmneziaWG 3.1            \e[1;35m│"
     echo -e "\e[1;35m╰─────────────────────────────────────╯\e[0m"
     echo ""
     echo -e "\e[1;34mSelect language / Выберите язык:\e[0m"
     echo -e "\e[1;32m1)\e[0m English"
     echo -e "\e[1;32m2)\e[0m Русский"
     echo ""
-    
+
     while true; do
-        read -p "Choice / Выбор [1-2]: " choice
+        read -r -p "Choice / Выбор [1-2]: " choice
         case $choice in
             1) SCRIPT_LANG="en"; break ;;
             2) SCRIPT_LANG="ru"; break ;;
             *) echo -e "\e[1;31mInvalid choice / Неверный выбор\e[0m" ;;
         esac
     done
-    
+
     clear
     echo -e "\n\e[1;35m╭─────────────────────────────────────╮"
-    echo -e "│      \e[1;36m  W A R P - N A T I V E        \e[1;35m│"
-    echo -e "│     \e[2;37m       by distillium            \e[1;35m│"
+    echo -e "│      \e[1;36m   A W G - N A T I V E         \e[1;35m│"
+    echo -e "│     \e[2;37m      AmneziaWG 3.1            \e[1;35m│"
     echo -e "\e[1;35m╰─────────────────────────────────────╯\e[0m"
     sleep 1
 }
@@ -42,235 +54,159 @@ function msg {
         "ru")
             case "$key" in
                 "root_required") echo "Этот скрипт должен быть запущен от имени root" ;;
-                "start_install") echo "Начинаем установку и настройку Cloudflare WARP" ;;
-                "install_wireguard") echo "1. Установка WireGuard..." ;;
+                "unsupported_os") echo "Поддерживаются только Debian и Ubuntu." ;;
+                "kernel_too_old") echo "Для AmneziaWG 3.1 нужно ядро 6.7 или новее. Сейчас" ;;
+                "start_install") echo "Установка клиента AmneziaWG 3.1: интерфейс без перехвата маршрута по умолчанию" ;;
+                "install_packages") echo "1. Репозиторий Amnezia, модуль ядра и awg-quick..." ;;
                 "update_failed") echo "Не удалось обновить список пакетов." ;;
-                "wireguard_failed") echo "Не удалось установить WireGuard." ;;
-                "wireguard_ok") echo "WireGuard установлен." ;;
-                "temp_dns") echo "2. Назначение временных DNS (1.1.1.1 + 8.8.8.8), чтобы гарантировать установку и регистрацию wgcf..." ;;
-                "dns_failed") echo "Не удалось настроить временные DNS-серверы." ;;
-                "dns_ok") echo "Временные DNS-серверы установлены." ;;
-                "download_wgcf") echo "3. Скачивание и установка wgcf..." ;;
-                "wgcf_version_failed") echo "Не удалось получить последнюю версию wgcf" ;;
-                "wgcf_download_failed") echo "Не удалось скачать wgcf." ;;
-                "wgcf_chmod_failed") echo "Не удалось сделать wgcf исполняемым." ;;
-                "wgcf_move_failed") echo "Не удалось переместить wgcf в /usr/local/bin." ;;
-                "wgcf_installed") echo "установлен в /usr/local/bin/wgcf." ;;
-                "arch_detected") echo "Определена архитектура:" ;;
-                "no_downloader") echo "Не найден wget или curl. Установите один из них и повторите." ;;
-                "register_wgcf") echo "4. Регистрация и генерация конфигурации wgcf..." ;;
-                "account_exists") echo "Файл wgcf-account.toml уже существует. Пропускаем регистрацию." ;;
-                "account_reuse_hint") echo "Используется существующий аккаунт. Если после установки не будет связи — удалите /opt/warp-native/wgcf/wgcf-account.toml и переустановите для чистой регистрации." ;;
-                "account_migrated") echo "Аккаунт wgcf перенесён из домашней директории в /opt/warp-native/wgcf." ;;
-                "registering") echo "Выполняем регистрацию wgcf..." ;;
-                "register_error") echo "wgcf register завершился с кодом" ;;
-                "cf_error_500") echo "Возможна ошибка 500 от Cloudflare." ;;
-                "known_behavior") echo "Это известное поведение: продолжаем попытку регистрации." ;;
-                "registration_failed") echo "Регистрация не удалась: файл wgcf-account.toml не создан." ;;
-                "account_created") echo "Файл wgcf-account.toml успешно создан. Продолжаем установку." ;;
-                "wgcf_binary_check") echo "Проверяем бинарный файл wgcf..." ;;
-                "wgcf_not_executable") echo "Бинарный файл wgcf не исполняется или имеет неправильную архитектуру." ;;
-                "trying_alternative") echo "Пробуем альтернативный метод регистрации..." ;;
-                "cf_500_detected") echo "Cloudflare вернул ошибку 500 Internal Server Error." ;;
-                "cf_rate_limited") echo "Превышен лимит запросов к Cloudflare. Подождите и попробуйте позже." ;;
-                "cf_forbidden") echo "Доступ запрещен Cloudflare." ;;
-                "network_issue") echo "Проблемы с сетевым подключением." ;;
-                "unknown_error") echo "Произошла неизвестная ошибка:" ;;
-                "config_generated") echo "Конфигурация wgcf успешно сгенерирована." ;;
-                "config_gen_failed") echo "Ошибка при генерации конфигурации wgcf." ;;
-                "warp_plus_prompt") echo "Если у вас есть WARP+ ключ, вы можете его применить." ;;
-                "enter_license") echo "Введите лицензионный ключ WARP+ (Enter - пропустить): " ;;
-                "applying_license") echo "Применение WARP+ лицензии..." ;;
-                "license_applied") echo "WARP+ лицензия успешно применена!" ;;
-                "license_failed") echo "Не удалось применить лицензию. Проверьте ключ." ;;
-                "license_not_applied") echo "WARP+ ключ введён, но лицензия не была применена. Используется бесплатная версия." ;;
-                "continuing_free") echo "Продолжаем с бесплатной версией WARP." ;;
-                "skipping_license") echo "Пропускаем применение WARP+ лицензии." ;;
-                "config_regenerated") echo "Конфигурация перегенерирована с WARP+." ;;
-                "edit_config") echo "5. Редактирование конфигурации WARP..." ;;
-                "config_not_found") echo "не найден." ;;
-                "dns_removed") echo "Не удалось удалить строку DNS из конфигурации." ;;
-                "table_off_failed") echo "Не удалось добавить Table = off." ;;
-                "keepalive_failed") echo "Не удалось добавить PersistentKeepalive = 25." ;;
-                "wireguard_dir_failed") echo "Не удалось создать директорию /etc/wireguard." ;;
-                "config_move_failed") echo "Не удалось переместить конфигурацию." ;;
-                "config_saved") echo "Конфигурация сохранена в /etc/wireguard/warp.conf." ;;
-                "check_ipv6") echo "6. Настройка только IPv4: удаление IPv6 из конфигурации и фиксация IPv4-endpoint..." ;;
-                "ipv6_removed") echo "IPv6 удалён из конфигурации, endpoint зафиксирован на IPv4." ;;
-                "connect_warp") echo "7. Подключение интерфейса WARP..." ;;
-                "connect_failed") echo "Не удалось подключить интерфейс." ;;
-                "warp_connected") echo "Интерфейс WARP успешно подключен." ;;
-                "check_status") echo "8. Проверка статуса подключения WARP..." ;;
-                "warp_not_found") echo "Интерфейс WARP не найден — туннель не работает." ;;
+                "base_packages_failed") echo "Не удалось установить базовые пакеты (curl, gnupg, nftables)." ;;
+                "repo_failed") echo "Не удалось подключить PPA Amnezia." ;;
+                "awg_install_failed") echo "Не удалось установить amneziawg." ;;
+                "tools_missing") echo "Пакет поставлен, но команд awg и awg-quick нет." ;;
+                "awg_ok") echo "AmneziaWG установлен, модуль понимает профиль 3.1." ;;
+                "module_failed") echo "Модуль ядра amneziawg не загрузился. Нужны заголовки текущего ядра и успешная сборка DKMS." ;;
+                "probe_failed") echo "Установленные awg и модуль не принимают HeaderProtectionKey. Это не линия AmneziaWG 3.1." ;;
+                "headers_missing") echo "Точные заголовки ядра не установились. Пробуем собрать модуль тем, что есть." ;;
+                "ppa_fallback") echo "В PPA нет сьюта этого выпуска, используется noble." ;;
+                "read_config") echo "2. Клиентский конфиг AmneziaWG 3.1..." ;;
+                "conf_path_prompt") echo "Путь к .conf (Enter — вставить текст, последняя строка END): " ;;
+                "conf_paste_prompt") echo "Вставьте конфиг. Строка из одного слова END завершает ввод." ;;
+                "conf_not_found") echo "Файл конфигурации не найден." ;;
+                "conf_empty") echo "Конфиг пустой." ;;
+                "conf_required") echo "В неинтерактивном режиме передайте файл: AWG_CONF_FILE=/path/client.conf или первым аргументом." ;;
+                "not_a_config") echo "Это не конфиг AmneziaWG: нужны секции [Interface] и [Peer]." ;;
+                "vpn_uri") echo "Ссылка vpn:// не подходит. Экспортируйте клиентский профиль как файл .conf." ;;
+                "server_config") echo "В [Interface] есть ListenPort — это серверный конфиг. Нужен клиентский профиль." ;;
+                "missing_hpk") echo "Нет HeaderProtectionKey. Для AmneziaWG 3.1 этот ключ обязателен и должен совпадать с сервером." ;;
+                "s_too_small") echo "S1–S4 должны быть не меньше 12: из них берётся nonce защиты заголовка." ;;
+                "missing_address") echo "В Address не осталось IPv4. Скрипт поднимает туннель только по IPv4." ;;
+                "missing_peer") echo "В конфиге нет секции [Peer]." ;;
+                "missing_keys") echo "У пира должны быть PublicKey и Endpoint." ;;
+                "config_ready") echo "Конфиг приведён к схеме интерфейса: Table = off, AllowedIPs = 0.0.0.0/0, без DNS." ;;
+                "hooks_removed") echo "Строки PreUp/PostUp/PreDown/PostDown убраны: правила интерфейса задаёт этот установщик." ;;
+                "saved_config") echo "Конфигурация сохранена в /etc/amnezia/amneziawg/awg.conf." ;;
+                "connect") echo "3. Подключение интерфейса awg..." ;;
+                "connect_failed") echo "Не удалось поднять интерфейс." ;;
+                "connected") echo "Интерфейс awg поднят." ;;
+                "check_status") echo "4. Проверка рукопожатия..." ;;
+                "iface_missing") echo "Интерфейс awg не найден — туннель не работает." ;;
                 "handshake_received") echo "Получен handshake →" ;;
-                "warp_active") echo "WARP подключён и активно обменивается трафиком." ;;
-                "waiting_handshake") echo "Ожидание подключения" ;;
-                "handshake_pending") echo "Туннель ещё поднимается — проверю связь ниже." ;;
-                "cf_response") echo "Ответ от Cloudflare: warp=on" ;;
-                "cf_not_confirmed") echo "Cloudflare не подтвердил warp=on, но интерфейс работает. Это нормально." ;;
-                "warp_plus_active") echo "WARP+ активирован" ;;
-                "warp_free_active") echo "Используется бесплатная версия WARP" ;;
-                "enable_autostart") echo "9. Включение автозапуска WARP при старте..." ;;
-                "autostart_failed") echo "Не удалось настроить автозапуск." ;;
-                "autostart_enabled") echo "Автозапуск включен." ;;
-                "setup_watchdog") echo "10. Настройка WARP Watchdog..." ;;
-                "watchdog_interval_prompt") echo "Выберите интервал проверки watchdog:" ;;
+                "tunnel_active") echo "Туннель поднят и обменивается пакетами." ;;
+                "waiting_handshake") echo "Ожидание рукопожатия" ;;
+                "handshake_pending") echo "Рукопожатия ещё нет — связь проверяется ниже." ;;
+                "enable_autostart") echo "5. Автозапуск awg..." ;;
+                "autostart_failed") echo "Не удалось включить автозапуск." ;;
+                "autostart_enabled") echo "Автозапуск включён." ;;
+                "setup_watchdog") echo "6. Watchdog и kill-switch..." ;;
+                "watchdog_interval_prompt") echo "Интервал проверки watchdog:" ;;
                 "watchdog_opt_5") echo "1) Каждые 5 минут (по умолчанию)" ;;
                 "watchdog_opt_10") echo "2) Каждые 10 минут" ;;
                 "watchdog_opt_15") echo "3) Каждые 15 минут" ;;
                 "watchdog_opt_30") echo "4) Каждые 30 минут" ;;
-                "watchdog_interval_set") echo "Интервал watchdog установлен:" ;;
-                "watchdog_created") echo "Watchdog скрипт создан: /opt/warp-native/warp-watchdog.sh" ;;
-                "watchdog_cron_set") echo "Cron задача создана: /etc/cron.d/warp-native" ;;
-                "watchdog_dir_failed") echo "Не удалось создать директорию /opt/warp-native." ;;
-                "installation_complete") echo "Установка и настройка Cloudflare WARP завершены!" ;;
+                "watchdog_interval_set") echo "Интервал watchdog:" ;;
+                "watchdog_created") echo "Watchdog: /opt/awg-native/awg-watchdog.sh" ;;
+                "watchdog_cron_set") echo "Cron: /etc/cron.d/awg-native" ;;
+                "watchdog_dir_failed") echo "Не удалось создать /opt/awg-native." ;;
+                "killswitch_failed") echo "Не удалось включить kill-switch (проверьте nftables)." ;;
+                "killswitch_enabled") echo "Fail-closed kill-switch включён (метка 51888 → только через awg)." ;;
+                "setup_command") echo "7. Команда awg-native..." ;;
+                "command_created") echo "Команда \e[1;32mawg-native\e[0m создана." ;;
+                "installation_complete") echo "Клиент AmneziaWG 3.1 установлен." ;;
                 "summary_header") echo "═══════════════ ИТОГ ═══════════════" ;;
-                "summary_account") echo "Тип аккаунта :" ;;
-                "summary_tunnel_ip") echo "IP туннеля   :" ;;
-                "summary_handshake") echo "Handshake    :" ;;
+                "summary_proto") echo "Профиль     :" ;;
+                "summary_endpoint") echo "Endpoint    :" ;;
+                "summary_tunnel_ip") echo "IP туннеля  :" ;;
+                "summary_handshake") echo "Handshake   :" ;;
                 "summary_seconds_ago") echo "сек. назад" ;;
                 "summary_footer") echo "════════════════════════════════════" ;;
-                "check_service") echo "Проверить статус службы:" ;;
-                "show_info") echo "Посмотреть информацию (WG):" ;;
-                "stop_interface") echo "Остановить интерфейс:" ;;
-                "start_interface") echo "Запустить интерфейс:" ;;
-                "restart_interface") echo "Перезапустить интерфейс:" ;;
-                "disable_autostart") echo "Отключить автозапуск:" ;;
-                "enable_autostart_cmd") echo "Включить автозапуск:" ;;
-                "watchdog_log") echo "Лог watchdog:" ;;
-                "watchdog_config") echo "Настройки watchdog:" ;;
-                "dns_restored") echo "DNS возвращены к заводскому состоянию (восстановлены из резервной копии)" ;;
-                "cf_response_plus") echo "Ответ от Cloudflare: warp=plus — WARP+ работает!" ;;
-                "recreating_account") echo "Обнаружен старый аккаунт. Для активации WARP+ пересоздаём аккаунт..." ;;
-                "old_account_removed") echo "Старый аккаунт удалён." ;;
-                "setup_alias") echo "11. Создание команды warp..." ;;
-                "exit_header") echo "══════════ ВЫХОД ЧЕРЕЗ WARP ═════════" ;;
-                "exit_provider") echo "Провайдер" ;;
+                "exit_header") echo "══════════ ВЫХОД ЧЕРЕЗ AWG ══════════" ;;
                 "exit_avail") echo "доступен" ;;
                 "exit_unavail") echo "недоступен" ;;
-                "exit_unreachable") echo "Через туннель нет связи. Установка завершена — watchdog будет поднимать туннель, проверьте позже командой: warp check" ;;
-                "alias_created") echo "Команда \e[1;32mwarp\e[0m создана: введите \e[1;32mwarp\e[0m для просмотра статуса." ;;
-                "killswitch_failed") echo "Не удалось включить kill-switch (проверьте поддержку nftables в ядре)." ;;
-                "killswitch_enabled") echo "Fail-closed kill-switch включён (метка 51888 → только через warp)." ;;
+                "exit_unreachable") echo "Через туннель нет связи. Установка завершена — watchdog будет поднимать интерфейс. Проверка: awg-native check" ;;
+                "disable_autostart") echo "Отключить автозапуск" ;;
+                "enable_autostart_cmd") echo "Включить автозапуск" ;;
+                "watchdog_config") echo "Настройки watchdog" ;;
                 "rollback_start") echo "Установка не завершена — откатываем изменения..." ;;
                 "rollback_done") echo "Изменения откачены." ;;
-                "rollback_skipped") echo "Обнаружена предыдущая установка — автоматический откат не выполняется. Для полного удаления запустите uninstall.sh." ;;
+                "rollback_skipped") echo "Обнаружена предыдущая установка — автоматический откат не выполняется. Для удаления запустите uninstall.sh." ;;
                 *) echo "$key" ;;
             esac
             ;;
         *)
             case "$key" in
                 "root_required") echo "This script must be run as root" ;;
-                "start_install") echo "Starting Cloudflare WARP installation and configuration" ;;
-                "install_wireguard") echo "1. Installing WireGuard..." ;;
-                "update_failed") echo "Failed to update package list." ;;
-                "wireguard_failed") echo "Failed to install WireGuard." ;;
-                "wireguard_ok") echo "WireGuard installed." ;;
-                "temp_dns") echo "2. Setting temporary DNS (1.1.1.1 + 8.8.8.8) to ensure wgcf installation and registration..." ;;
-                "dns_failed") echo "Failed to configure temporary DNS servers." ;;
-                "dns_ok") echo "Temporary DNS servers configured." ;;
-                "download_wgcf") echo "3. Downloading and installing wgcf..." ;;
-                "wgcf_version_failed") echo "Failed to get latest wgcf version" ;;
-                "wgcf_download_failed") echo "Failed to download wgcf." ;;
-                "wgcf_chmod_failed") echo "Failed to make wgcf executable." ;;
-                "wgcf_move_failed") echo "Failed to move wgcf to /usr/local/bin." ;;
-                "wgcf_installed") echo "installed to /usr/local/bin/wgcf." ;;
-                "arch_detected") echo "Detected architecture:" ;;
-                "no_downloader") echo "Neither wget nor curl found. Please install one and try again." ;;
-                "register_wgcf") echo "4. Registering and generating wgcf configuration..." ;;
-                "account_exists") echo "wgcf-account.toml file already exists. Skipping registration." ;;
-                "account_reuse_hint") echo "Reusing existing account. If there is no connectivity after install — delete /opt/warp-native/wgcf/wgcf-account.toml and reinstall for a clean registration." ;;
-                "account_migrated") echo "wgcf account moved from home directory to /opt/warp-native/wgcf." ;;
-                "registering") echo "Performing wgcf registration..." ;;
-                "register_error") echo "wgcf register exited with code" ;;
-                "cf_error_500") echo "Possible 500 error from Cloudflare." ;;
-                "known_behavior") echo "This is known behavior: continuing registration attempt." ;;
-                "registration_failed") echo "Registration failed: wgcf-account.toml file not created." ;;
-                "account_created") echo "wgcf-account.toml file successfully created. Continuing installation." ;;
-                "wgcf_binary_check") echo "Checking wgcf binary..." ;;
-                "wgcf_not_executable") echo "wgcf binary is not executable or has wrong architecture." ;;
-                "trying_alternative") echo "Trying alternative registration method..." ;;
-                "cf_500_detected") echo "Cloudflare returned 500 Internal Server Error." ;;
-                "cf_rate_limited") echo "Rate limited by Cloudflare. Please wait and try again later." ;;
-                "cf_forbidden") echo "Access forbidden by Cloudflare." ;;
-                "network_issue") echo "Network connection issue." ;;
-                "unknown_error") echo "Unknown error occurred:" ;;
-                "config_generated") echo "wgcf configuration successfully generated." ;;
-                "config_gen_failed") echo "Error generating wgcf configuration." ;;
-                "warp_plus_prompt") echo "If you have a WARP+ key, you can apply it now." ;;
-                "enter_license") echo "Enter WARP+ license key (Enter to skip): " ;;
-                "applying_license") echo "Applying WARP+ license..." ;;
-                "license_applied") echo "WARP+ license successfully applied!" ;;
-                "license_failed") echo "Failed to apply license. Check your key." ;;
-                "license_not_applied") echo "WARP+ key was entered but license was not applied. Using free version." ;;
-                "continuing_free") echo "Continuing with free WARP version." ;;
-                "skipping_license") echo "Skipping WARP+ license application." ;;
-                "config_regenerated") echo "Configuration regenerated with WARP+." ;;
-                "edit_config") echo "5. Editing WARP configuration..." ;;
-                "config_not_found") echo "not found." ;;
-                "dns_removed") echo "Failed to remove DNS line from configuration." ;;
-                "table_off_failed") echo "Failed to add Table = off." ;;
-                "keepalive_failed") echo "Failed to add PersistentKeepalive = 25." ;;
-                "wireguard_dir_failed") echo "Failed to create /etc/wireguard directory." ;;
-                "config_move_failed") echo "Failed to move configuration." ;;
-                "config_saved") echo "Configuration saved to /etc/wireguard/warp.conf." ;;
-                "check_ipv6") echo "6. IPv4-only setup: removing IPv6 from configuration and pinning IPv4 endpoint..." ;;
-                "ipv6_removed") echo "IPv6 removed from configuration, endpoint pinned to IPv4." ;;
-                "connect_warp") echo "7. Connecting WARP interface..." ;;
-                "connect_failed") echo "Failed to connect interface." ;;
-                "warp_connected") echo "WARP interface successfully connected." ;;
-                "check_status") echo "8. Checking WARP connection status..." ;;
-                "warp_not_found") echo "WARP interface not found — tunnel is not working." ;;
+                "unsupported_os") echo "Only Debian and Ubuntu are supported." ;;
+                "kernel_too_old") echo "AmneziaWG 3.1 needs kernel 6.7 or newer. Running" ;;
+                "start_install") echo "Installing an AmneziaWG 3.1 client that does not take over the default route" ;;
+                "install_packages") echo "1. Amnezia repository, kernel module and awg-quick..." ;;
+                "update_failed") echo "Failed to update the package list." ;;
+                "base_packages_failed") echo "Failed to install base packages (curl, gnupg, nftables)." ;;
+                "repo_failed") echo "Failed to add the Amnezia PPA." ;;
+                "awg_install_failed") echo "Failed to install amneziawg." ;;
+                "tools_missing") echo "The package was installed, but awg and awg-quick are missing." ;;
+                "awg_ok") echo "AmneziaWG is installed and the module accepts a 3.1 profile." ;;
+                "module_failed") echo "The amneziawg kernel module did not load. The running kernel headers and a successful DKMS build are required." ;;
+                "probe_failed") echo "The installed awg tools and module rejected HeaderProtectionKey. This is not the AmneziaWG 3.1 line." ;;
+                "headers_missing") echo "Exact kernel headers were not installed. Continuing with whatever headers are already present." ;;
+                "ppa_fallback") echo "The PPA has no suite for this release; using noble." ;;
+                "read_config") echo "2. AmneziaWG 3.1 client configuration..." ;;
+                "conf_path_prompt") echo "Path to the .conf (Enter to paste it; finish with a line that says END): " ;;
+                "conf_paste_prompt") echo "Paste the configuration. A line containing only END ends the input." ;;
+                "conf_not_found") echo "Configuration file not found." ;;
+                "conf_empty") echo "The configuration is empty." ;;
+                "conf_required") echo "Non-interactive mode needs a file: AWG_CONF_FILE=/path/client.conf or pass the path as the first argument." ;;
+                "not_a_config") echo "This is not an AmneziaWG config: [Interface] and [Peer] are required." ;;
+                "vpn_uri") echo "A vpn:// link cannot be used. Export the client profile as a .conf file." ;;
+                "server_config") echo "[Interface] contains ListenPort, so this is a server config. A client profile is required." ;;
+                "missing_hpk") echo "HeaderProtectionKey is missing. AmneziaWG 3.1 requires it, and it must match the server." ;;
+                "s_too_small") echo "S1–S4 must be at least 12: those bytes are the header-protection nonce." ;;
+                "missing_address") echo "No IPv4 address left in Address. This installer brings the tunnel up for IPv4 only." ;;
+                "missing_peer") echo "The configuration has no [Peer] section." ;;
+                "missing_keys") echo "Each peer needs a PublicKey and an Endpoint." ;;
+                "config_ready") echo "Configuration adjusted for interface binding: Table = off, AllowedIPs = 0.0.0.0/0, DNS removed." ;;
+                "hooks_removed") echo "PreUp/PostUp/PreDown/PostDown lines were removed; this installer owns the interface rules." ;;
+                "saved_config") echo "Configuration saved to /etc/amnezia/amneziawg/awg.conf." ;;
+                "connect") echo "3. Bringing up the awg interface..." ;;
+                "connect_failed") echo "Failed to bring the interface up." ;;
+                "connected") echo "Interface awg is up." ;;
+                "check_status") echo "4. Checking the handshake..." ;;
+                "iface_missing") echo "Interface awg was not found — the tunnel is not working." ;;
                 "handshake_received") echo "Handshake received →" ;;
-                "warp_active") echo "WARP is connected and actively exchanging traffic." ;;
-                "waiting_handshake") echo "Waiting for connection" ;;
-                "handshake_pending") echo "Tunnel is still coming up — connectivity will be checked below." ;;
-                "cf_response") echo "Cloudflare response: warp=on" ;;
-                "cf_not_confirmed") echo "Cloudflare did not confirm warp=on, but interface is working. This is normal." ;;
-                "warp_plus_active") echo "WARP+ activated" ;;
-                "warp_free_active") echo "Using free WARP version" ;;
-                "enable_autostart") echo "9. Enabling WARP autostart on boot..." ;;
-                "autostart_failed") echo "Failed to configure autostart." ;;
+                "tunnel_active") echo "The tunnel is up and exchanging packets." ;;
+                "waiting_handshake") echo "Waiting for a handshake" ;;
+                "handshake_pending") echo "No handshake yet — connectivity is checked below." ;;
+                "enable_autostart") echo "5. Enabling awg autostart..." ;;
+                "autostart_failed") echo "Failed to enable autostart." ;;
                 "autostart_enabled") echo "Autostart enabled." ;;
-                "setup_watchdog") echo "10. Setting up WARP Watchdog..." ;;
-                "watchdog_interval_prompt") echo "Select watchdog check interval:" ;;
+                "setup_watchdog") echo "6. Watchdog and kill-switch..." ;;
+                "watchdog_interval_prompt") echo "Watchdog check interval:" ;;
                 "watchdog_opt_5") echo "1) Every 5 minutes (default)" ;;
                 "watchdog_opt_10") echo "2) Every 10 minutes" ;;
                 "watchdog_opt_15") echo "3) Every 15 minutes" ;;
                 "watchdog_opt_30") echo "4) Every 30 minutes" ;;
-                "watchdog_interval_set") echo "Watchdog interval set:" ;;
-                "watchdog_created") echo "Watchdog script created: /opt/warp-native/warp-watchdog.sh" ;;
-                "watchdog_cron_set") echo "Cron job created: /etc/cron.d/warp-native" ;;
-                "watchdog_dir_failed") echo "Failed to create /opt/warp-native directory." ;;
-                "installation_complete") echo "Cloudflare WARP installation and configuration completed!" ;;
+                "watchdog_interval_set") echo "Watchdog interval:" ;;
+                "watchdog_created") echo "Watchdog: /opt/awg-native/awg-watchdog.sh" ;;
+                "watchdog_cron_set") echo "Cron: /etc/cron.d/awg-native" ;;
+                "watchdog_dir_failed") echo "Failed to create /opt/awg-native." ;;
+                "killswitch_failed") echo "Failed to enable the kill-switch (check nftables)." ;;
+                "killswitch_enabled") echo "Fail-closed kill-switch enabled (mark 51888 → awg only)." ;;
+                "setup_command") echo "7. Creating the awg-native command..." ;;
+                "command_created") echo "\e[1;32mawg-native\e[0m command created." ;;
+                "installation_complete") echo "AmneziaWG 3.1 client installed." ;;
                 "summary_header") echo "════════════════ SUMMARY ═══════════════" ;;
-                "summary_account") echo "Account type :" ;;
-                "summary_tunnel_ip") echo "Tunnel IP    :" ;;
-                "summary_handshake") echo "Handshake    :" ;;
+                "summary_proto") echo "Profile     :" ;;
+                "summary_endpoint") echo "Endpoint    :" ;;
+                "summary_tunnel_ip") echo "Tunnel IP   :" ;;
+                "summary_handshake") echo "Handshake   :" ;;
                 "summary_seconds_ago") echo "sec. ago" ;;
                 "summary_footer") echo "════════════════════════════════════════" ;;
-                "check_service") echo "Check service status:" ;;
-                "show_info") echo "Show information (WG):" ;;
-                "stop_interface") echo "Stop interface:" ;;
-                "start_interface") echo "Start interface:" ;;
-                "restart_interface") echo "Restart interface:" ;;
-                "disable_autostart") echo "Disable autostart:" ;;
-                "enable_autostart_cmd") echo "Enable autostart:" ;;
-                "watchdog_log") echo "Watchdog log:" ;;
-                "watchdog_config") echo "Watchdog config:" ;;
-                "dns_restored") echo "DNS restored to factory state (restored from backup)" ;;
-                "cf_response_plus") echo "Cloudflare response: warp=plus — WARP+ is working!" ;;
-                "recreating_account") echo "Old account detected. Recreating account to activate WARP+..." ;;
-                "old_account_removed") echo "Old account removed." ;;
-                "setup_alias") echo "11. Creating warp command..." ;;
-                "exit_header") echo "═══════════ WARP EXIT INFO ══════════" ;;
-                "exit_provider") echo "Provider" ;;
+                "exit_header") echo "═══════════ AWG EXIT INFO ═══════════" ;;
                 "exit_avail") echo "available" ;;
                 "exit_unavail") echo "unavailable" ;;
-                "exit_unreachable") echo "No connectivity through the tunnel. Installation finished — the watchdog will keep bringing it up, check later with: warp check" ;;
-                "alias_created") echo "\e[1;32mwarp\e[0m command created: type \e[1;32mwarp\e[0m to view status." ;;
-                "killswitch_failed") echo "Failed to enable kill-switch (check nftables support in the kernel)." ;;
-                "killswitch_enabled") echo "Fail-closed kill-switch enabled (mark 51888 → warp only)." ;;
+                "exit_unreachable") echo "No connectivity through the tunnel. Installation finished — the watchdog will keep bringing it up. Check with: awg-native check" ;;
+                "disable_autostart") echo "Disable autostart" ;;
+                "enable_autostart_cmd") echo "Enable autostart" ;;
+                "watchdog_config") echo "Watchdog config" ;;
                 "rollback_start") echo "Installation did not complete — rolling back changes..." ;;
                 "rollback_done") echo "Changes rolled back." ;;
                 "rollback_skipped") echo "A previous installation was detected — automatic rollback is skipped. Run uninstall.sh for a full removal." ;;
@@ -301,80 +237,479 @@ function error_exit {
     exit 1
 }
 
-function try_register {
-    output=$(timeout 60 bash -c 'yes | wgcf register' 2>&1)
-    ret=$?
-    echo "$output"
-    return $ret
-}
-
-RESTORE_DNS_REQUIRED=false
-
-function restore_dns {
-    if [[ "$RESTORE_DNS_REQUIRED" == true && -f /etc/resolv.conf.backup ]]; then
-        cp /etc/resolv.conf.backup /etc/resolv.conf
-        ok "$(msg "dns_restored")"
-        RESTORE_DNS_REQUIRED=false
-    fi
-}
-
-WG_PREINSTALLED=false
-NFT_PREINSTALLED=false
-PREV_INSTALL=false
-ROLLBACK_ARMED=false
-INSTALL_COMPLETE=false
-
 function pkg_installed {
     dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q "ok installed"
 }
 
-function fetch_warp {
-    local url="$1" out=""
-    for attempt in 1 2 3; do
-        out=$(curl -s --interface warp --max-time 8 "$url" 2>/dev/null)
-        [ -n "$out" ] && { echo "$out"; return 0; }
-        sleep 1
-    done
+function apt_run {
+    local log rc
+    log=$(mktemp)
+    DEBIAN_FRONTEND=noninteractive apt-get "$@" >"$log" 2>&1
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        tail -n 40 "$log" >&2 || true
+        rm -f "$log"
+        return "$rc"
+    fi
+    rm -f "$log"
+    return 0
+}
+
+function kernel_supports_awg31 {
+    local major minor rest
+    IFS=. read -r major minor rest <<<"$(uname -r | cut -d- -f1)"
+    major=${major:-0}
+    minor=${minor:-0}
+    if (( major > 6 )); then
+        return 0
+    fi
+    if (( major == 6 && minor >= 7 )); then
+        return 0
+    fi
     return 1
 }
 
-### Откат при ошибке: убираем всё, что создал установщик.
-### wgcf-account.toml сохраняем, иначе повторная регистрация упрётся в rate limit Cloudflare.
+function conf_key {
+    local s="${1%%#*}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [[ "$s" == *"="* ]] || return 1
+    local k="${s%%=*}"
+    k="${k#"${k%%[![:space:]]*}"}"
+    k="${k%"${k##*[![:space:]]}"}"
+    printf '%s' "${k,,}"
+}
+
+function conf_value {
+    local s="${1%%#*}"
+    local v="${s#*=}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
+function ipv4_only_list {
+    local raw="$1" part out=""
+    local -a parts=()
+    IFS=',' read -r -a parts <<<"$raw"
+    for part in "${parts[@]}"; do
+        part="${part//[[:space:]]/}"
+        if [[ "$part" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]+$ ]]; then
+            out+="${out:+, }${part}"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+function s_floor {
+    local v="${1//[[:space:]]/}"
+    local left="${v%%-*}"
+    if [[ "$left" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$((10#$left))"
+        return 0
+    fi
+    return 1
+}
+
+### Переписывает клиентский профиль под ту же схему, что warp-native делал с wgcf:
+### DNS и хуки убираются, Table = off не даёт awg-quick забрать маршрут по умолчанию,
+### AllowedIPs = 0.0.0.0/0 оставляет шифрование всего IPv4, который вышел в интерфейс.
+### Jc/Jmin/Jmax/S/H/I, HeaderProtectionKey и ContentPaddingAddition не меняются.
+function prepare_client_config {
+    local src="$1" dst="$2"
+    local line key value trimmed section="none"
+    local have_iface=0 have_peer=0 have_priv=0 have_hpk=0 have_v4=0 have_endpoint=0
+    local serverish=0 peer_open=0
+    local peer_keepalive=0 peer_pubkey=0 peer_endpoint=0 peer_allowed=0
+    local -a out=()
+    local -A smin=()
+    local normalized tmp
+
+    PREPARE_ERROR=""
+    PREPARE_DETAIL=""
+    PREPARE_STRIPPED_HOOKS=0
+
+    tmp=$(mktemp)
+    sed '1s/^\xEF\xBB\xBF//; s/\r$//' "$src" >"$tmp" || { rm -f "$tmp"; PREPARE_ERROR="not_a_config"; return 1; }
+
+    finish_peer() {
+        [[ "$peer_open" -eq 1 ]] || return 0
+        if [[ "$peer_allowed" -eq 0 ]]; then
+            out+=("AllowedIPs = 0.0.0.0/0")
+        fi
+        if [[ "$peer_keepalive" -eq 0 ]]; then
+            out+=("PersistentKeepalive = 25")
+        fi
+        if [[ "$peer_pubkey" -eq 0 || "$peer_endpoint" -eq 0 ]]; then
+            PREPARE_ERROR="missing_keys"
+        fi
+        if [[ "$peer_endpoint" -eq 1 ]]; then
+            have_endpoint=1
+        fi
+        peer_open=0
+    }
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        trimmed="${line#"${line%%[![:space:]]*}"}"
+        if [[ "$section" == "none" ]]; then
+            [[ -z "${trimmed}" || "$trimmed" == \#* ]] && continue
+            if [[ "$trimmed" == vpn://* ]]; then
+                PREPARE_ERROR="vpn_uri"
+                rm -f "$tmp"
+                return 1
+            fi
+        fi
+
+        if [[ "$trimmed" == "[Interface]" ]]; then
+            if [[ "$have_iface" -eq 1 ]]; then
+                PREPARE_ERROR="not_a_config"
+                rm -f "$tmp"
+                return 1
+            fi
+            finish_peer
+            section="iface"
+            have_iface=1
+            out+=("[Interface]")
+            out+=("Table = off")
+            continue
+        fi
+        if [[ "$trimmed" == "[Peer]" ]]; then
+            if [[ "$have_iface" -eq 0 ]]; then
+                PREPARE_ERROR="not_a_config"
+                rm -f "$tmp"
+                return 1
+            fi
+            finish_peer
+            section="peer"
+            have_peer=1
+            peer_open=1
+            peer_keepalive=0
+            peer_pubkey=0
+            peer_endpoint=0
+            peer_allowed=0
+            out+=("[Peer]")
+            continue
+        fi
+        if [[ "$trimmed" == \[*\] ]]; then
+            PREPARE_ERROR="not_a_config"
+            rm -f "$tmp"
+            return 1
+        fi
+        if [[ "$section" == "none" ]]; then
+            PREPARE_ERROR="not_a_config"
+            rm -f "$tmp"
+            return 1
+        fi
+
+        if ! key=$(conf_key "$line"); then
+            out+=("$line")
+            continue
+        fi
+        value=$(conf_value "$line")
+
+        case "$key" in
+            dns|table|fwmark|saveconfig)
+                continue
+                ;;
+            preup|postup|predown|postdown)
+                PREPARE_STRIPPED_HOOKS=1
+                continue
+                ;;
+            listenport)
+                serverish=1
+                continue
+                ;;
+        esac
+
+        if [[ "$section" == "iface" ]]; then
+            case "$key" in
+                privatekey) have_priv=1 ;;
+                headerprotectionkey)
+                    [[ -n "$value" ]] && have_hpk=1
+                    ;;
+                address)
+                    value=$(ipv4_only_list "$value")
+                    [[ -z "$value" ]] && continue
+                    have_v4=1
+                    out+=("Address = ${value}")
+                    continue
+                    ;;
+                s1|s2|s3|s4)
+                    if floor=$(s_floor "$value"); then
+                        smin["$key"]=$floor
+                    else
+                        smin["$key"]=-1
+                    fi
+                    ;;
+            esac
+        else
+            case "$key" in
+                publickey) [[ -n "$value" ]] && peer_pubkey=1 ;;
+                endpoint) [[ -n "$value" ]] && peer_endpoint=1 ;;
+                allowedips)
+                    if [[ "$peer_allowed" -eq 0 ]]; then
+                        out+=("AllowedIPs = 0.0.0.0/0")
+                        peer_allowed=1
+                    fi
+                    continue
+                    ;;
+                persistentkeepalive) peer_keepalive=1 ;;
+            esac
+        fi
+        out+=("$line")
+    done <"$tmp"
+    rm -f "$tmp"
+    finish_peer
+
+    if [[ "$serverish" -eq 1 ]]; then
+        PREPARE_ERROR="server_config"
+        return 1
+    fi
+    if [[ "$have_iface" -eq 0 || "$have_peer" -eq 0 ]]; then
+        PREPARE_ERROR="not_a_config"
+        return 1
+    fi
+    if [[ -n "$PREPARE_ERROR" ]]; then
+        return 1
+    fi
+    if [[ "$have_priv" -eq 0 ]]; then
+        PREPARE_ERROR="missing_keys"
+        return 1
+    fi
+    if [[ "$have_hpk" -eq 0 ]]; then
+        PREPARE_ERROR="missing_hpk"
+        return 1
+    fi
+    if [[ "$have_v4" -eq 0 ]]; then
+        PREPARE_ERROR="missing_address"
+        return 1
+    fi
+    if [[ "$have_endpoint" -eq 0 ]]; then
+        PREPARE_ERROR="missing_keys"
+        return 1
+    fi
+
+    local sk
+    for sk in s1 s2 s3 s4; do
+        if [[ -z "${smin[$sk]+x}" ]]; then
+            PREPARE_ERROR="s_too_small"
+            PREPARE_DETAIL="$(printf '%s' "$sk" | tr '[:lower:]' '[:upper:]') missing"
+            return 1
+        fi
+        if (( smin[$sk] < 12 )); then
+            PREPARE_ERROR="s_too_small"
+            PREPARE_DETAIL="$(printf '%s' "$sk" | tr '[:lower:]' '[:upper:]')=${smin[$sk]}"
+            return 1
+        fi
+    done
+
+    normalized=$(mktemp)
+    printf '%s\n' "${out[@]}" >"$normalized"
+    install -m 600 "$normalized" "$dst" || { rm -f "$normalized"; PREPARE_ERROR="not_a_config"; return 1; }
+    rm -f "$normalized"
+    return 0
+}
+
+function self_test {
+    local dir src dst ok_cases=0
+    dir=$(mktemp -d)
+    src="${dir}/in.conf"
+    dst="${dir}/out.conf"
+
+    cat >"$src" <<'EOF'
+[Interface]
+PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
+Address = 10.9.9.2/32, fd00:1::2/128
+DNS = 1.1.1.1
+MTU = 1280
+Jc = 4
+Jmin = 40
+Jmax = 70
+S1 = 88
+S2 = 47
+S3 = 12-40
+S4 = 17
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+I1 = <r 2><b 0x858000010002000000001c>
+HeaderProtectionKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=
+ContentPaddingAddition = 32-128
+FwMark = 1234
+PostUp = iptables -A FORWARD -j ACCEPT
+
+[Peer]
+PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=
+Endpoint = 203.0.113.10:39743
+AllowedIPs = 0.0.0.0/0, ::/0
+EOF
+
+    prepare_client_config "$src" "$dst" || { echo "valid config rejected: $PREPARE_ERROR $PREPARE_DETAIL" >&2; return 1; }
+    grep -q '^Table = off$' "$dst" || { echo "Table = off missing" >&2; return 1; }
+    grep -q '^DNS' "$dst" && { echo "DNS kept" >&2; return 1; }
+    grep -q 'FwMark' "$dst" && { echo "FwMark kept" >&2; return 1; }
+    grep -q 'PostUp' "$dst" && { echo "PostUp kept" >&2; return 1; }
+    grep -q 'fd00' "$dst" && { echo "IPv6 address kept" >&2; return 1; }
+    grep -q '^AllowedIPs = 0.0.0.0/0$' "$dst" || { echo "AllowedIPs not rewritten" >&2; return 1; }
+    grep -q '^PersistentKeepalive = 25$' "$dst" || { echo "keepalive missing" >&2; return 1; }
+    grep -q '^HeaderProtectionKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=$' "$dst" || { echo "HPK changed" >&2; return 1; }
+    grep -q '^I1 = <r 2><b 0x858000010002000000001c>$' "$dst" || { echo "I1 changed" >&2; return 1; }
+    grep -q '^S3 = 12-40$' "$dst" || { echo "S3 changed" >&2; return 1; }
+    grep -q '^Endpoint = 203.0.113.10:39743$' "$dst" || { echo "endpoint changed" >&2; return 1; }
+    [[ "$PREPARE_STRIPPED_HOOKS" -eq 1 ]] || { echo "hook flag not set" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    printf '%s\r\n' '[Interface]' 'PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=' 'Address = 10.8.0.2/32' 'HeaderProtectionKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=' 'S1 = 12' 'S2 = 12' 'S3 = 12' 'S4 = 12' '[Peer]' 'PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=' 'Endpoint = example.com:51820' >"$src"
+    prepare_client_config "$src" "$dst" || { echo "crlf config rejected: $PREPARE_ERROR" >&2; return 1; }
+    grep -q $'\r' "$dst" && { echo "CR kept" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    cat >"$src" <<'EOF'
+[Interface]
+PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
+Address = 10.9.9.2/32
+ListenPort = 51820
+S1 = 20
+S2 = 20
+S3 = 20
+S4 = 20
+HeaderProtectionKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=
+[Peer]
+PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=
+AllowedIPs = 10.9.9.2/32
+EOF
+    if prepare_client_config "$src" "$dst"; then
+        echo "server config accepted" >&2
+        return 1
+    fi
+    [[ "$PREPARE_ERROR" == "server_config" ]] || { echo "server error is $PREPARE_ERROR" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    cat >"$src" <<'EOF'
+[Interface]
+PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
+Address = 10.9.9.2/32
+S1 = 20
+S2 = 20
+S3 = 20
+S4 = 8
+[Peer]
+PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=
+Endpoint = 203.0.113.10:1
+EOF
+    if prepare_client_config "$src" "$dst"; then
+        echo "config without 3.1 key accepted" >&2
+        return 1
+    fi
+    [[ "$PREPARE_ERROR" == "missing_hpk" ]] || { echo "hpk error is $PREPARE_ERROR" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    cat >"$src" <<'EOF'
+[Interface]
+PrivateKey = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=
+Address = 10.9.9.2/32
+HeaderProtectionKey = bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb=
+S1 = 20
+S2 = 20
+S3 = 20
+S4 = 8
+[Peer]
+PublicKey = ccccccccccccccccccccccccccccccccccccccccccc=
+Endpoint = 203.0.113.10:1
+EOF
+    if prepare_client_config "$src" "$dst"; then
+        echo "short S4 accepted" >&2
+        return 1
+    fi
+    [[ "$PREPARE_ERROR" == "s_too_small" && "$PREPARE_DETAIL" == "S4=8" ]] || { echo "s error is $PREPARE_ERROR $PREPARE_DETAIL" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    printf 'vpn://something\n' >"$src"
+    if prepare_client_config "$src" "$dst"; then
+        echo "vpn uri accepted" >&2
+        return 1
+    fi
+    [[ "$PREPARE_ERROR" == "vpn_uri" ]] || { echo "uri error is $PREPARE_ERROR" >&2; return 1; }
+    ok_cases=$((ok_cases + 1))
+
+    rm -rf "$dir"
+    echo "self-test ok (${ok_cases} cases)"
+}
+
+if [[ "${1:-}" == "--self-test" ]]; then
+    self_test
+    exit $?
+fi
+if [[ $# -ge 1 ]]; then
+    CONF_ARG="$1"
+fi
+
+NFT_PREINSTALLED=false
+CRON_PREINSTALLED=false
+AWG_PKGS_PREINSTALLED=()
+PREV_INSTALL=false
+ROLLBACK_ARMED=false
+INSTALL_COMPLETE=false
+PPA_ADDED_BY_US=false
+KEYRING_ADDED_BY_US=false
+
 function rollback_install {
     echo ""
     warn "$(msg "rollback_start")"
 
-    systemctl disable --now wg-quick@warp &>/dev/null || true
-    ip link delete warp &>/dev/null || true
-    systemctl disable --now warp-native-killswitch.service &>/dev/null || true
-    nft delete table inet warp_native &>/dev/null || true
+    systemctl disable --now "$UNIT" &>/dev/null || true
+    awg-quick down "$IFACE" &>/dev/null || true
+    ip link delete "$IFACE" &>/dev/null || true
+    ip link delete awgprobe &>/dev/null || true
+    systemctl disable --now awg-native-killswitch.service &>/dev/null || true
+    nft delete table inet awg_native &>/dev/null || true
 
-    rm -f /etc/cron.d/warp-native
-    rm -f /etc/systemd/system/warp-native-killswitch.service
-    rm -f /etc/systemd/system/wg-quick@warp.service.d/warp-native-killswitch.conf
-    rm -f /etc/systemd/system/nftables.service.d/warp-native-killswitch.conf
-    rmdir /etc/systemd/system/wg-quick@warp.service.d /etc/systemd/system/nftables.service.d &>/dev/null || true
+    rm -f /etc/cron.d/awg-native
+    rm -f /etc/systemd/system/awg-native-killswitch.service
+    rm -f /etc/systemd/system/awg-quick@awg.service.d/awg-native-killswitch.conf
+    rm -f /etc/systemd/system/nftables.service.d/awg-native-killswitch.conf
+    rmdir /etc/systemd/system/awg-quick@awg.service.d /etc/systemd/system/nftables.service.d &>/dev/null || true
     systemctl daemon-reload &>/dev/null || true
-    systemctl reset-failed wg-quick@warp warp-native-killswitch.service &>/dev/null || true
+    systemctl reset-failed "$UNIT" awg-native-killswitch.service &>/dev/null || true
 
-    rm -rf /opt/warp-native
-    rm -f /usr/local/bin/warp /usr/local/bin/wgcf
-    rm -f /etc/wireguard/warp.conf
-    rmdir /etc/wireguard &>/dev/null || true
-    rm -f "$WGCF_DIR/wgcf-profile.conf"
+    rm -rf "$STATE_DIR"
+    rm -f /usr/local/bin/awg-native
+    rm -f "$CONF_FILE"
+    rmdir "$CONF_DIR" /etc/amnezia &>/dev/null || true
 
-    ### Пакеты удаляем только если их поставил этот запуск
-    if [[ "$WG_PREINSTALLED" == false ]]; then
-        DEBIAN_FRONTEND=noninteractive apt remove --purge -y wireguard wireguard-tools &>/dev/null || true
+    local pkg
+    for pkg in amneziawg amneziawg-dkms amneziawg-tools amneziawg-linux-kmod; do
+        local was=0 seen
+        for seen in "${AWG_PKGS_PREINSTALLED[@]}"; do
+            [[ "$seen" == "$pkg" ]] && was=1
+        done
+        if [[ "$was" -eq 0 ]] && pkg_installed "$pkg"; then
+            DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y "$pkg" &>/dev/null || true
+        fi
+    done
+    if [[ "$NFT_PREINSTALLED" == false ]] && pkg_installed nftables; then
+        DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y nftables &>/dev/null || true
     fi
-    if [[ "$NFT_PREINSTALLED" == false ]]; then
-        DEBIAN_FRONTEND=noninteractive apt remove --purge -y nftables &>/dev/null || true
+    if [[ "$CRON_PREINSTALLED" == false ]] && pkg_installed cron; then
+        DEBIAN_FRONTEND=noninteractive apt-get remove --purge -y cron &>/dev/null || true
+    fi
+    if [[ "$PPA_ADDED_BY_US" == true ]]; then
+        rm -f "$PPA_LIST"
+    fi
+    if [[ "$KEYRING_ADDED_BY_US" == true ]]; then
+        rm -f "$PPA_KEYRING"
     fi
 
     ok "$(msg "rollback_done")"
 }
 
 function on_exit {
+    [[ -n "${client_src:-}" ]] && rm -f "$client_src"
+    [[ -n "${probe_file:-}" ]] && rm -f "$probe_file"
+    if [[ $EUID -eq 0 ]]; then
+        ip link delete awgprobe &>/dev/null || true
+    fi
     if [[ "$ROLLBACK_ARMED" == true && "$INSTALL_COMPLETE" != true ]]; then
         if [[ "$PREV_INSTALL" == true ]]; then
             warn "$(msg "rollback_skipped")"
@@ -382,7 +717,6 @@ function on_exit {
             rollback_install
         fi
     fi
-    restore_dns
 }
 
 trap on_exit EXIT
@@ -394,279 +728,313 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-select_language
-
-### Состояние до установки, для безопасного отката (снимаем ДО создания файлов)
-if [[ -f /etc/wireguard/warp.conf || -d /opt/warp-native || -f /usr/local/bin/warp ]]; then
-    PREV_INSTALL=true
+if [[ -n "${AWG_LANG:-}" ]]; then
+    case "$AWG_LANG" in
+        ru|RU|ru_RU) SCRIPT_LANG="ru" ;;
+        *) SCRIPT_LANG="en" ;;
+    esac
+elif [[ -t 0 ]]; then
+    select_language
+else
+    SCRIPT_LANG="en"
 fi
-if pkg_installed wireguard || pkg_installed wireguard-tools; then
-    WG_PREINSTALLED=true
+
+if [[ ! -f /etc/os-release ]]; then
+    error_exit "$(msg "unsupported_os")"
+fi
+# shellcheck disable=SC1091
+. /etc/os-release
+case "${ID:-}" in
+    ubuntu|debian) ;;
+    *)
+        if [[ "${ID_LIKE:-}" != *debian* && "${ID_LIKE:-}" != *ubuntu* ]]; then
+            error_exit "$(msg "unsupported_os")"
+        fi
+        ;;
+esac
+
+if ! kernel_supports_awg31; then
+    error_exit "$(msg "kernel_too_old") $(uname -r)"
+fi
+
+if [[ -f "$CONF_FILE" || -d "$STATE_DIR" || -f /usr/local/bin/awg-native ]]; then
+    PREV_INSTALL=true
 fi
 if pkg_installed nftables; then
     NFT_PREINSTALLED=true
 fi
-ROLLBACK_ARMED=true
-
-mkdir -p "$WGCF_DIR"
-
-### Миграция со старых версий: переносим аккаунт из $HOME, чтобы сохранить device и не триггерить новую регистрацию (rate limit)
-if [[ -f "$HOME/wgcf-account.toml" && ! -f "$WGCF_DIR/wgcf-account.toml" ]]; then
-    mv "$HOME/wgcf-account.toml" "$WGCF_DIR/wgcf-account.toml"
-    [[ -f "$HOME/wgcf-profile.conf" ]] && mv "$HOME/wgcf-profile.conf" "$WGCF_DIR/wgcf-profile.conf"
-    info "$(msg "account_migrated")"
+if pkg_installed cron; then
+    CRON_PREINSTALLED=true
 fi
-
-cd "$WGCF_DIR"
+for pkg in amneziawg amneziawg-dkms amneziawg-tools amneziawg-linux-kmod; do
+    if pkg_installed "$pkg"; then
+        AWG_PKGS_PREINSTALLED+=("$pkg")
+    fi
+done
+ROLLBACK_ARMED=true
 
 info "$(msg "start_install")"
 echo ""
+info "$(msg "install_packages")"
 
-info "$(msg "install_wireguard")"
-apt update -qq &>/dev/null || error_exit "$(msg "update_failed")"
-apt install wireguard nftables -y &>/dev/null || error_exit "$(msg "wireguard_failed")"
-ok "$(msg "wireguard_ok")"
-echo ""
+apt_run update || error_exit "$(msg "update_failed")"
+apt_run install -y curl ca-certificates gnupg nftables cron iproute2 || error_exit "$(msg "base_packages_failed")"
 
-info "$(msg "temp_dns")"
-cp /etc/resolv.conf /etc/resolv.conf.backup
-RESTORE_DNS_REQUIRED=true
-echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8" > /etc/resolv.conf || error_exit "$(msg "dns_failed")"
-ok "$(msg "dns_ok")"
-echo ""
-
-info "$(msg "download_wgcf")"
-WGCF_RELEASE_URL="https://api.github.com/repos/ViRb3/wgcf/releases/latest"
-WGCF_VERSION=$(curl -s "$WGCF_RELEASE_URL" | grep tag_name | cut -d '"' -f 4)
-
-if [ -z "$WGCF_VERSION" ]; then
-    error_exit "$(msg "wgcf_version_failed")"
-fi
-
-ARCH=$(uname -m)
-case $ARCH in
-    x86_64) WGCF_ARCH="amd64" ;;
-    aarch64|arm64) WGCF_ARCH="arm64" ;;
-    armv7l) WGCF_ARCH="armv7" ;;
-    *) WGCF_ARCH="amd64" ;;
+ppa_codename=""
+case "${ID:-ubuntu}" in
+    debian)
+        case "${VERSION_CODENAME:-}" in
+            bookworm) ppa_codename="focal" ;;
+            *) ppa_codename="noble" ;;
+        esac
+        ;;
+    *)
+        ppa_codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-noble}}"
+        case "$ppa_codename" in
+            noble|jammy|focal) ;;
+            *)
+                if ! curl -fsI --max-time 15 "https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu/dists/${ppa_codename}/Release" >/dev/null 2>&1; then
+                    warn "$(msg "ppa_fallback")"
+                    ppa_codename="noble"
+                fi
+                ;;
+        esac
+        ;;
 esac
 
-info "$(msg "arch_detected") $ARCH -> $WGCF_ARCH"
-
-WGCF_DOWNLOAD_URL="https://github.com/ViRb3/wgcf/releases/download/${WGCF_VERSION}/wgcf_${WGCF_VERSION#v}_linux_${WGCF_ARCH}"
-WGCF_BINARY_NAME="wgcf_${WGCF_VERSION#v}_linux_${WGCF_ARCH}"
-
-if command -v wget &>/dev/null; then
-    wget -q "$WGCF_DOWNLOAD_URL" -O "$WGCF_BINARY_NAME" || error_exit "$(msg "wgcf_download_failed")"
-elif command -v curl &>/dev/null; then
-    curl -sL "$WGCF_DOWNLOAD_URL" -o "$WGCF_BINARY_NAME" || error_exit "$(msg "wgcf_download_failed")"
-else
-    error_exit "$(msg "no_downloader")"
+install -d -m 0755 /etc/apt/keyrings
+if [[ ! -f "$PPA_KEYRING" ]]; then
+    key_tmp=$(mktemp)
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${PPA_KEY_ID}" -o "$key_tmp" \
+        || curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${PPA_KEY_ID}&options=mr" -o "$key_tmp" \
+        || error_exit "$(msg "repo_failed")"
+    gpg --dearmor --output "$PPA_KEYRING" "$key_tmp" || { rm -f "$key_tmp" "$PPA_KEYRING"; error_exit "$(msg "repo_failed")"; }
+    rm -f "$key_tmp"
+    chmod 644 "$PPA_KEYRING"
+    KEYRING_ADDED_BY_US=true
 fi
 
-chmod +x "$WGCF_BINARY_NAME" || error_exit "$(msg "wgcf_chmod_failed")"
-mv "$WGCF_BINARY_NAME" /usr/local/bin/wgcf || error_exit "$(msg "wgcf_move_failed")"
-ok "wgcf $WGCF_VERSION $(msg "wgcf_installed")"
-echo ""
-
-info "$(msg "register_wgcf")"
-
-echo ""
-info "$(msg "warp_plus_prompt")"
-read -p "$(msg "enter_license")" WARP_LICENSE
-
-if [[ -n "$WARP_LICENSE" && -f wgcf-account.toml ]]; then
-    warn "$(msg "recreating_account")"
-    rm -f wgcf-account.toml wgcf-profile.conf
-    ok "$(msg "old_account_removed")"
+ppa_existed=false
+[[ -f "$PPA_LIST" ]] && ppa_existed=true
+if [[ "$ppa_existed" == false ]] || ! grep -q "[[:space:]]${ppa_codename}[[:space:]]" "$PPA_LIST"; then
+    printf 'deb [signed-by=%s] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu %s main\n' "$PPA_KEYRING" "$ppa_codename" >"$PPA_LIST" \
+        || error_exit "$(msg "repo_failed")"
+    chmod 644 "$PPA_LIST"
+    [[ "$ppa_existed" == false ]] && PPA_ADDED_BY_US=true
 fi
 
-LICENSE_APPLIED=false
+apt_run update || error_exit "$(msg "update_failed")"
 
-if [[ -f wgcf-account.toml ]]; then
-    info "$(msg "account_exists")"
-    warn "$(msg "account_reuse_hint")"
-else
-    info "$(msg "registering")"
-    info "$(msg "wgcf_binary_check")"
-    
-    if ! wgcf --help &>/dev/null; then
-        warn "$(msg "wgcf_not_executable")"
-        chmod +x /usr/local/bin/wgcf
-        if ! wgcf --help &>/dev/null; then
-            error_exit "$(msg "wgcf_not_executable")"
-        fi
-    fi
-    
-    output=$(try_register)
-    ret=$?
-    
-    if [[ $ret -ne 0 ]]; then
-        warn "$(msg "register_error") $ret."
-        
-        if [[ $ret -eq 126 ]]; then
-            warn "$(msg "wgcf_not_executable")"
-        elif [[ $ret -eq 124 ]]; then
-            warn "Registration timed out after 60 seconds."
-        elif [[ "$output" == *"500 Internal Server Error"* ]]; then
-            warn "$(msg "cf_500_detected")"
-            info "$(msg "known_behavior")"
-        elif [[ "$output" == *"429"* || "$output" == *"Too Many Requests"* ]]; then
-            warn "$(msg "cf_rate_limited")"
-        elif [[ "$output" == *"403"* || "$output" == *"Forbidden"* ]]; then
-            warn "$(msg "cf_forbidden")"
-        elif [[ "$output" == *"network"* || "$output" == *"connection"* ]]; then
-            warn "$(msg "network_issue")"
-        else
-            warn "$(msg "unknown_error")"
-            echo "$output"
-        fi
-        
-        info "$(msg "trying_alternative")"
-        try_register &>/dev/null || true
-        sleep 2
-    fi
-    
-    if [[ ! -f wgcf-account.toml ]]; then
-        error_exit "$(msg "registration_failed")"
-    fi
-    
-    info "$(msg "account_created")"
-fi
-
-wgcf generate &>/dev/null || error_exit "$(msg "config_gen_failed")"
-ok "$(msg "config_generated")"
-echo ""
-
-if [[ -n "$WARP_LICENSE" ]]; then
-    info "$(msg "applying_license")"
-    wgcf update --license-key "$WARP_LICENSE" &>/dev/null
-    if [[ $? -eq 0 ]]; then
-        LICENSE_APPLIED=true
-        ok "$(msg "license_applied")"
-        wgcf generate &>/dev/null || error_exit "$(msg "config_gen_failed")"
-        ok "$(msg "config_regenerated")"
+kheaders="linux-headers-$(uname -r)"
+if ! apt_run install -y "$kheaders"; then
+    warn "$(msg "headers_missing")"
+    if [[ "${ID:-}" == "ubuntu" || "${ID_LIKE:-}" == *ubuntu* ]]; then
+        apt_run install -y linux-headers-generic || true
+    elif [[ "$(uname -m)" == "aarch64" || "$(uname -m)" == "arm64" ]]; then
+        apt_run install -y linux-headers-arm64 || true
     else
-        warn "$(msg "license_failed")"
-        warn "$(msg "license_not_applied")"
-        info "$(msg "continuing_free")"
+        apt_run install -y linux-headers-amd64 || true
+    fi
+fi
+
+if ! apt_run install -y amneziawg; then
+    apt_run install -y amneziawg-dkms amneziawg-tools || error_exit "$(msg "awg_install_failed")"
+fi
+if ! command -v awg >/dev/null 2>&1 || ! command -v awg-quick >/dev/null 2>&1; then
+    apt_run install -y amneziawg-tools || error_exit "$(msg "tools_missing")"
+fi
+command -v awg >/dev/null 2>&1 && command -v awg-quick >/dev/null 2>&1 || error_exit "$(msg "tools_missing")"
+
+modprobe amneziawg || error_exit "$(msg "module_failed")"
+
+probe_priv=$(awg genkey | tr -d '\n')
+probe_pub=$(printf '%s' "$probe_priv" | awg pubkey | tr -d '\n')
+probe_hpk=$(awg genkey | tr -d '\n')
+probe_file=$(mktemp)
+chmod 600 "$probe_file"
+cat >"$probe_file" <<EOF
+[Interface]
+PrivateKey = ${probe_priv}
+HeaderProtectionKey = ${probe_hpk}
+S1 = 12
+S2 = 12
+S3 = 12
+S4 = 12
+Jc = 1
+Jmin = 40
+Jmax = 70
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+
+[Peer]
+PublicKey = ${probe_pub}
+Endpoint = 127.0.0.1:1
+AllowedIPs = 0.0.0.0/0
+EOF
+unset probe_priv probe_pub probe_hpk
+
+ip link delete awgprobe &>/dev/null || true
+ip link add awgprobe type amneziawg || { rm -f "$probe_file"; error_exit "$(msg "module_failed")"; }
+probe_err=$(mktemp)
+if ! awg setconf awgprobe "$probe_file" >"$probe_err" 2>&1; then
+    sed -E 's/((Private|Public|Preshared|HeaderProtection)Key[[:space:]]*=[[:space:]]*).*/\1[hidden]/I' "$probe_err" >&2 || true
+    rm -f "$probe_err" "$probe_file"
+    ip link delete awgprobe &>/dev/null || true
+    error_exit "$(msg "probe_failed")"
+fi
+rm -f "$probe_err"
+if ! awg showconf awgprobe 2>/dev/null | grep -qi '^[[:space:]]*HeaderProtectionKey[[:space:]]*='; then
+    rm -f "$probe_file"
+    ip link delete awgprobe &>/dev/null || true
+    error_exit "$(msg "probe_failed")"
+fi
+ip link delete awgprobe &>/dev/null || true
+rm -f "$probe_file"
+ok "$(msg "awg_ok")"
+echo ""
+
+info "$(msg "read_config")"
+client_src=$(mktemp)
+chmod 600 "$client_src"
+
+if [[ -n "${AWG_CONF_FILE:-}" ]]; then
+    [[ -f "$AWG_CONF_FILE" ]] || error_exit "$(msg "conf_not_found")"
+    cp "$AWG_CONF_FILE" "$client_src"
+elif [[ -n "$CONF_ARG" ]]; then
+    [[ -f "$CONF_ARG" ]] || error_exit "$(msg "conf_not_found")"
+    cp "$CONF_ARG" "$client_src"
+elif [[ -t 0 ]]; then
+    read -r -p "$(msg "conf_path_prompt")" conf_path
+    conf_path="${conf_path#"${conf_path%%[![:space:]]*}"}"
+    conf_path="${conf_path%"${conf_path##*[![:space:]]}"}"
+    conf_path="${conf_path/#\~/$HOME}"
+    if [[ -n "$conf_path" ]]; then
+        [[ -f "$conf_path" ]] || error_exit "$(msg "conf_not_found")"
+        cp "$conf_path" "$client_src"
+    else
+        info "$(msg "conf_paste_prompt")"
+        while IFS= read -r line; do
+            [[ "$line" == "END" ]] && break
+            printf '%s\n' "$line" >>"$client_src"
+        done
     fi
 else
-    info "$(msg "skipping_license")"
+    error_exit "$(msg "conf_required")"
 fi
+
+if [[ ! -s "$client_src" ]]; then
+    rm -f "$client_src"
+    error_exit "$(msg "conf_empty")"
+fi
+
+install -d -m 700 /etc/amnezia
+install -d -m 700 "$CONF_DIR"
+install -d -m 700 "$STATE_DIR"
+if [[ -f "$CONF_FILE" ]]; then
+    cp "$CONF_FILE" "${STATE_DIR}/awg.conf.prev"
+    chmod 600 "${STATE_DIR}/awg.conf.prev"
+fi
+
+prepare_client_config "$client_src" "$CONF_FILE" || {
+    detail=""
+    [[ -n "$PREPARE_DETAIL" ]] && detail=" ${PREPARE_DETAIL}"
+    rm -f "$client_src"
+    error_exit "$(msg "$PREPARE_ERROR")${detail}"
+}
+rm -f "$client_src"
+chmod 600 "$CONF_FILE"
+ok "$(msg "config_ready")"
+if [[ "$PREPARE_STRIPPED_HOOKS" -eq 1 ]]; then
+    info "$(msg "hooks_removed")"
+fi
+ok "$(msg "saved_config")"
 echo ""
 
-info "$(msg "edit_config")"
-WGCF_CONF_FILE="wgcf-profile.conf"
-
-if [ ! -f "$WGCF_CONF_FILE" ]; then
-    error_exit "$(msg "config_not_found" | sed "s/не найден/Файл $WGCF_CONF_FILE не найден/" | sed "s/not found/File $WGCF_CONF_FILE not found/")"
+info "$(msg "connect")"
+systemctl stop "$UNIT" &>/dev/null || true
+awg-quick down "$IFACE" &>/dev/null || true
+ip link delete "$IFACE" &>/dev/null || true
+systemctl reset-failed "$UNIT" &>/dev/null || true
+if ! systemctl start "$UNIT"; then
+    journalctl -u "$UNIT" -n 40 --no-pager 2>/dev/null \
+        | sed -E 's/((Private|Public|Preshared|HeaderProtection)Key[[:space:]]*=[[:space:]]*).*/\1[hidden]/I' >&2 || true
+    error_exit "$(msg "connect_failed")"
 fi
-
-sed -i '/^DNS =/d' "$WGCF_CONF_FILE" || error_exit "$(msg "dns_removed")"
-
-if ! grep -q "Table = off" "$WGCF_CONF_FILE"; then
-    sed -i '/^MTU =/aTable = off' "$WGCF_CONF_FILE" || error_exit "$(msg "table_off_failed")"
-fi
-
-if ! grep -q "PersistentKeepalive = 25" "$WGCF_CONF_FILE"; then
-    sed -i '/^Endpoint =/aPersistentKeepalive = 25' "$WGCF_CONF_FILE" || error_exit "$(msg "keepalive_failed")"
-fi
-
-mkdir -p /etc/wireguard || error_exit "$(msg "wireguard_dir_failed")"
-mv "$WGCF_CONF_FILE" /etc/wireguard/warp.conf || error_exit "$(msg "config_move_failed")"
-ok "$(msg "config_saved")"
-echo ""
-
-info "$(msg "check_ipv6")"
-sed -i 's/,\s*[0-9a-fA-F:]\+\/128//' /etc/wireguard/warp.conf
-sed -i '/Address = [0-9a-fA-F:]\+\/128/d' /etc/wireguard/warp.conf
-sed -i "s|^Endpoint = .*|Endpoint = ${WARP_ENDPOINT_V4}|" /etc/wireguard/warp.conf
-sed -i 's|^AllowedIPs = .*|AllowedIPs = 0.0.0.0/0|' /etc/wireguard/warp.conf
-chmod 600 /etc/wireguard/warp.conf
-ok "$(msg "ipv6_removed")"
-echo ""
-
-info "$(msg "connect_warp")"
-### Чистый запуск: при переустановке юнит может висеть active (exited) без интерфейса
-systemctl stop wg-quick@warp &>/dev/null || true
-ip link delete warp &>/dev/null || true
-systemctl reset-failed wg-quick@warp &>/dev/null || true
-systemctl start wg-quick@warp &>/dev/null || error_exit "$(msg "connect_failed")"
-ok "$(msg "warp_connected")"
+ok "$(msg "connected")"
 echo ""
 
 info "$(msg "check_status")"
-
-if ! wg show warp &>/dev/null; then
-    warn "$(msg "warp_not_found")"
+handshake_ts=0
+if ! awg show "$IFACE" &>/dev/null; then
+    warn "$(msg "iface_missing")"
 else
-    ### Ждём handshake 15с. Это НЕ вердикт - связь проверяется ниже
-    handshake_ts=0
     HANDSHAKE_WAIT=15
     SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     for ((i=0; i<HANDSHAKE_WAIT; i++)); do
-        handshake_ts=$(wg show warp latest-handshakes 2>/dev/null | awk '{print $2}')
+        handshake_ts=$(awg show "$IFACE" latest-handshakes 2>/dev/null | awk '$2 > max { max = $2 } END { print max + 0 }')
         if [[ -n "$handshake_ts" && "$handshake_ts" -gt 0 ]]; then
             break
         fi
         c="${SPIN:i%10:1}"
-        printf "\r\e[1;34m[..]\e[0m $(msg "waiting_handshake") \e[1;36m%s\e[0m  %ss " "$c" "$((HANDSHAKE_WAIT-i))"
+        printf "\r\e[1;34m[..]\e[0m $(msg "waiting_handshake") \e[1;36m%s\e[0m  %ss " "$c" "$((HANDSHAKE_WAIT - i))"
         sleep 1
     done
     printf "\r\e[K"
-
     if [[ -n "$handshake_ts" && "$handshake_ts" -gt 0 ]]; then
         age=$(( $(date +%s) - handshake_ts ))
         ok "$(msg "handshake_received") ${age}s ago"
-        ok "$(msg "warp_active")"
+        ok "$(msg "tunnel_active")"
     else
         info "$(msg "handshake_pending")"
     fi
 fi
-
-wgcf_account_type=$(wgcf status 2>/dev/null | grep -i "Account type" | awk -F': ' '{print $2}' | xargs)
-if [[ "$wgcf_account_type" == "unlimited" ]]; then
-    ok "$(msg "warp_plus_active")"
-elif [[ -n "$wgcf_account_type" ]]; then
-    info "$(msg "warp_free_active")"
-fi
 echo ""
 
 info "$(msg "enable_autostart")"
-systemctl enable wg-quick@warp &>/dev/null || error_exit "$(msg "autostart_failed")"
+systemctl enable "$UNIT" &>/dev/null || error_exit "$(msg "autostart_failed")"
 ok "$(msg "autostart_enabled")"
 echo ""
 
 info "$(msg "setup_watchdog")"
 echo ""
-info "$(msg "watchdog_interval_prompt")"
-echo -e "\e[1;32m$(msg "watchdog_opt_5")\e[0m"
-echo -e "\e[1;32m$(msg "watchdog_opt_10")\e[0m"
-echo -e "\e[1;32m$(msg "watchdog_opt_15")\e[0m"
-echo -e "\e[1;32m$(msg "watchdog_opt_30")\e[0m"
-echo ""
 
 WATCHDOG_INTERVAL=5
 WATCHDOG_CRON_INTERVAL="*/5 * * * *"
-
-read -p "Choice / Выбор [1-4, Enter = 1]: " wdog_choice
-case "$wdog_choice" in
-    1) WATCHDOG_INTERVAL=5;  WATCHDOG_CRON_INTERVAL="*/5 * * * *" ;;
-    2) WATCHDOG_INTERVAL=10; WATCHDOG_CRON_INTERVAL="*/10 * * * *" ;;
-    3) WATCHDOG_INTERVAL=15; WATCHDOG_CRON_INTERVAL="*/15 * * * *" ;;
-    4) WATCHDOG_INTERVAL=30; WATCHDOG_CRON_INTERVAL="*/30 * * * *" ;;
-    *)  WATCHDOG_INTERVAL=5;  WATCHDOG_CRON_INTERVAL="*/5 * * * *" ;;
-esac
+if [[ -n "${AWG_WATCHDOG_MINUTES:-}" ]]; then
+    case "$AWG_WATCHDOG_MINUTES" in
+        10) WATCHDOG_INTERVAL=10; WATCHDOG_CRON_INTERVAL="*/10 * * * *" ;;
+        15) WATCHDOG_INTERVAL=15; WATCHDOG_CRON_INTERVAL="*/15 * * * *" ;;
+        30) WATCHDOG_INTERVAL=30; WATCHDOG_CRON_INTERVAL="*/30 * * * *" ;;
+        *) WATCHDOG_INTERVAL=5; WATCHDOG_CRON_INTERVAL="*/5 * * * *" ;;
+    esac
+elif [[ -t 0 ]]; then
+    info "$(msg "watchdog_interval_prompt")"
+    echo -e "\e[1;32m$(msg "watchdog_opt_5")\e[0m"
+    echo -e "\e[1;32m$(msg "watchdog_opt_10")\e[0m"
+    echo -e "\e[1;32m$(msg "watchdog_opt_15")\e[0m"
+    echo -e "\e[1;32m$(msg "watchdog_opt_30")\e[0m"
+    echo ""
+    read -r -p "Choice / Выбор [1-4, Enter = 1]: " wdog_choice
+    case "$wdog_choice" in
+        2) WATCHDOG_INTERVAL=10; WATCHDOG_CRON_INTERVAL="*/10 * * * *" ;;
+        3) WATCHDOG_INTERVAL=15; WATCHDOG_CRON_INTERVAL="*/15 * * * *" ;;
+        4) WATCHDOG_INTERVAL=30; WATCHDOG_CRON_INTERVAL="*/30 * * * *" ;;
+        *) WATCHDOG_INTERVAL=5; WATCHDOG_CRON_INTERVAL="*/5 * * * *" ;;
+    esac
+fi
 
 ok "$(msg "watchdog_interval_set") ${WATCHDOG_INTERVAL} min"
 echo ""
 
-mkdir -p /opt/warp-native/logs || error_exit "$(msg "watchdog_dir_failed")"
+install -d -m 700 "${STATE_DIR}/logs" || error_exit "$(msg "watchdog_dir_failed")"
+printf '%s\n' "$SCRIPT_LANG" >"${STATE_DIR}/lang"
+chmod 600 "${STATE_DIR}/lang"
 
-cat > /opt/warp-native/config.env <<EOF
-# warp-native watchdog configuration
-# Edited values take effect on next cron run
+cat >"${STATE_DIR}/config.env" <<'EOF'
+# awg-native watchdog configuration
+# Edited values take effect on the next cron run
 
 # Cooldown between restarts in seconds (default: 120)
 RESTART_COOLDOWN=120
@@ -674,32 +1042,33 @@ RESTART_COOLDOWN=120
 # Max log lines before rotation (default: 1000)
 LOG_MAX_LINES=1000
 EOF
+chmod 600 "${STATE_DIR}/config.env"
 
-cat > /opt/warp-native/warp-killswitch.sh <<'KILLSWITCH_EOF'
+cat >"${STATE_DIR}/awg-killswitch.sh" <<'KILLSWITCH_EOF'
 #!/bin/bash
 set -euo pipefail
 
-TABLE="warp_native"
-CHAIN="warp_native_killswitch"
+TABLE="awg_native"
+CHAIN="awg_native_killswitch"
 MARK="51888"
-IFACE="warp"
+IFACE="awg"
 
 enable_killswitch() {
     if ! nft list table inet "$TABLE" &>/dev/null; then
         nft -f - <<EOF
 add table inet $TABLE
 add chain inet $TABLE $CHAIN { type filter hook output priority -150; policy accept; }
-add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "warp-native kill-switch"
+add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "awg-native kill-switch"
 EOF
     elif ! nft list chain inet "$TABLE" "$CHAIN" &>/dev/null; then
         nft -f - <<EOF
 add chain inet $TABLE $CHAIN { type filter hook output priority -150; policy accept; }
-add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "warp-native kill-switch"
+add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "awg-native kill-switch"
 EOF
     else
         nft -f - <<EOF
 flush chain inet $TABLE $CHAIN
-add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "warp-native kill-switch"
+add rule inet $TABLE $CHAIN meta mark $MARK oifname != "$IFACE" counter drop comment "awg-native kill-switch"
 EOF
     fi
 }
@@ -720,58 +1089,57 @@ case "${1:-}" in
         ;;
 esac
 KILLSWITCH_EOF
+chmod 700 "${STATE_DIR}/awg-killswitch.sh"
 
-chmod +x /opt/warp-native/warp-killswitch.sh
-
-cat > /etc/systemd/system/warp-native-killswitch.service <<'KILLSWITCH_SERVICE_EOF'
+cat > /etc/systemd/system/awg-native-killswitch.service <<'KILLSWITCH_SERVICE_EOF'
 [Unit]
-Description=WARP Native fail-closed kill-switch
+Description=AWG Native fail-closed kill-switch
 After=nftables.service
-Before=wg-quick@warp.service
+Before=awg-quick@awg.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/warp-native/warp-killswitch.sh start
-ExecStop=/opt/warp-native/warp-killswitch.sh stop
+ExecStart=/opt/awg-native/awg-killswitch.sh start
+ExecStop=/opt/awg-native/awg-killswitch.sh stop
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 KILLSWITCH_SERVICE_EOF
 
-mkdir -p /etc/systemd/system/nftables.service.d
-cat > /etc/systemd/system/nftables.service.d/warp-native-killswitch.conf <<'NFTABLES_DROPIN_EOF'
+install -d /etc/systemd/system/nftables.service.d
+cat > /etc/systemd/system/nftables.service.d/awg-native-killswitch.conf <<'NFTABLES_DROPIN_EOF'
 [Service]
-ExecStartPost=/opt/warp-native/warp-killswitch.sh start
-ExecReload=/opt/warp-native/warp-killswitch.sh start
+ExecStartPost=/opt/awg-native/awg-killswitch.sh start
+ExecReload=/opt/awg-native/awg-killswitch.sh start
 NFTABLES_DROPIN_EOF
 
-mkdir -p /etc/systemd/system/wg-quick@warp.service.d
-cat > /etc/systemd/system/wg-quick@warp.service.d/warp-native-killswitch.conf <<'WARP_DEPENDENCY_EOF'
+install -d /etc/systemd/system/awg-quick@awg.service.d
+cat > /etc/systemd/system/awg-quick@awg.service.d/awg-native-killswitch.conf <<'AWG_DEPENDENCY_EOF'
 [Unit]
-Requires=warp-native-killswitch.service
-After=warp-native-killswitch.service
+Requires=awg-native-killswitch.service
+After=awg-native-killswitch.service
 
 [Service]
-ExecStartPre=/opt/warp-native/warp-killswitch.sh start
-WARP_DEPENDENCY_EOF
+ExecStartPre=/opt/awg-native/awg-killswitch.sh start
+AWG_DEPENDENCY_EOF
 
 systemctl daemon-reload
-
-systemctl enable --now warp-native-killswitch.service &>/dev/null || \
-    error_exit "$(msg "killswitch_failed")"
-
+systemctl enable --now awg-native-killswitch.service &>/dev/null || error_exit "$(msg "killswitch_failed")"
 ok "$(msg "killswitch_enabled")"
 echo ""
 
-cat > /opt/warp-native/warp-watchdog.sh <<'WATCHDOG_EOF'
+cat >"${STATE_DIR}/awg-watchdog.sh" <<'WATCHDOG_EOF'
 #!/bin/bash
 
-CONFIG="/opt/warp-native/config.env"
-LOG="/opt/warp-native/logs/watchdog.log"
-COOLDOWN_FILE="/opt/warp-native/logs/.last_restart"
+CONFIG="/opt/awg-native/config.env"
+LOG="/opt/awg-native/logs/watchdog.log"
+COOLDOWN_FILE="/opt/awg-native/logs/.last_restart"
+IFACE="awg"
+UNIT="awg-quick@awg"
 
 if [[ -f "$CONFIG" ]]; then
+    # shellcheck disable=SC1090
     source "$CONFIG"
 fi
 
@@ -783,15 +1151,15 @@ log() {
     local message="$2"
     local ts
     ts=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$ts] [$level] $message" >> "$LOG"
+    echo "[$ts] [$level] $message" >>"$LOG"
 }
 
 rotate_log() {
     if [[ -f "$LOG" ]]; then
         local lines
-        lines=$(wc -l < "$LOG")
+        lines=$(wc -l <"$LOG")
         if [[ $lines -gt $LOG_MAX_LINES ]]; then
-            tail -n "$LOG_MAX_LINES" "$LOG" > "${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
+            tail -n "$LOG_MAX_LINES" "$LOG" >"${LOG}.tmp" && mv "${LOG}.tmp" "$LOG"
         fi
     fi
 }
@@ -800,125 +1168,139 @@ do_restart() {
     local reason="$1"
 
     if [[ -f "$COOLDOWN_FILE" ]]; then
-        local last_restart
+        local last_restart now diff
         last_restart=$(cat "$COOLDOWN_FILE")
-        local now
         now=$(date +%s)
-        local diff=$(( now - last_restart ))
+        diff=$(( now - last_restart ))
         if [[ $diff -lt $RESTART_COOLDOWN ]]; then
             log "SKIP" "Restart skipped (cooldown: ${diff}s < ${RESTART_COOLDOWN}s). Reason was: $reason"
             return
         fi
     fi
 
-    log "RESTART" "Restarting wg-quick@warp. Reason: $reason"
+    log "RESTART" "Restarting ${UNIT}. Reason: $reason"
 
-    ### Интерфейс поднят вручную мимо systemd — иначе restart упал бы с "File exists"
-    if ! systemctl is-active --quiet wg-quick@warp && ip link show warp &>/dev/null; then
-        wg-quick down warp &>/dev/null || ip link delete warp &>/dev/null
+    if ! systemctl is-active --quiet "$UNIT" && ip link show "$IFACE" &>/dev/null; then
+        awg-quick down "$IFACE" &>/dev/null || ip link delete "$IFACE" &>/dev/null
     fi
 
-    systemctl restart wg-quick@warp
+    systemctl restart "$UNIT"
     local ret=$?
-    date +%s > "$COOLDOWN_FILE"
+    date +%s >"$COOLDOWN_FILE"
 
     if [[ $ret -eq 0 ]]; then
-        log "OK" "wg-quick@warp restarted successfully"
+        log "OK" "${UNIT} restarted successfully"
     else
-        log "ERROR" "Failed to restart wg-quick@warp (exit code: $ret)"
+        log "ERROR" "Failed to restart ${UNIT} (exit code: $ret)"
     fi
 }
 
 rotate_log
 
-if ! systemctl is-active --quiet wg-quick@warp; then
+if ! systemctl is-active --quiet "$UNIT"; then
     do_restart "systemd unit is not active"
     exit 0
 fi
 
-### Возраст handshake только для лога, НЕ критерий рестарта:
-### На живой ноде в простое он протухает, но туннель рабочий
-handshake_ts=$(wg show warp latest-handshakes 2>/dev/null | awk '{print $2}')
+handshake_ts=$(awg show "$IFACE" latest-handshakes 2>/dev/null | awk '$2 > max { max = $2 } END { print max + 0 }')
 if [[ -n "$handshake_ts" && "$handshake_ts" -gt 0 ]]; then
     hs_age=$(( $(date +%s) - handshake_ts ))
 else
     hs_age="n/a"
 fi
 
-### Главный критерий - идёт ли трафик. ICMP заодно будит handshake, а если ICMP зарезан - пробуем TCP
-if ping -I warp -c 2 -W 3 1.1.1.1 &>/dev/null; then
-    log "OK" "WARP is healthy via ICMP (handshake: ${hs_age}s ago)"
+if ping -I "$IFACE" -c 2 -W 3 1.1.1.1 &>/dev/null; then
+    log "OK" "AWG is healthy via ICMP (handshake: ${hs_age}s ago)"
     exit 0
 fi
 
-### ICMP не прошёл — фолбэк на TCP
-if curl -s --interface warp --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q '^warp='; then
-    log "OK" "WARP is healthy via TCP (ICMP blocked; handshake: ${hs_age}s ago)"
+if curl -s --interface "$IFACE" --max-time 8 https://ifconfig.co/json 2>/dev/null | grep -q '"ip"'; then
+    log "OK" "AWG is healthy via TCP (ICMP blocked; handshake: ${hs_age}s ago)"
     exit 0
 fi
 
-### Ни ICMP, ни TCP - туннель действительно мёртв
-do_restart "no connectivity via warp (ICMP + TCP failed; handshake: ${hs_age}s ago)"
+do_restart "no connectivity via awg (ICMP + TCP failed; handshake: ${hs_age}s ago)"
 exit 0
 WATCHDOG_EOF
-
-chmod +x /opt/warp-native/warp-watchdog.sh
+chmod 700 "${STATE_DIR}/awg-watchdog.sh"
 ok "$(msg "watchdog_created")"
 
-cat > /etc/cron.d/warp-native <<EOF
-# warp-native watchdog — checks WARP tunnel health
-${WATCHDOG_CRON_INTERVAL} root /opt/warp-native/warp-watchdog.sh
+cat > /etc/cron.d/awg-native <<EOF
+# awg-native watchdog — checks the AmneziaWG tunnel
+${WATCHDOG_CRON_INTERVAL} root /opt/awg-native/awg-watchdog.sh
 EOF
-
-chmod 644 /etc/cron.d/warp-native
+chmod 644 /etc/cron.d/awg-native
+systemctl enable --now cron &>/dev/null || systemctl enable --now crond &>/dev/null || true
 ok "$(msg "watchdog_cron_set")"
 echo ""
 
-info "$(msg "setup_alias")"
+info "$(msg "setup_command")"
 
-cat > /usr/local/bin/warp <<'WARP_CMD_EOF'
+cat > /usr/local/bin/awg-native <<'AWG_CMD_EOF'
 #!/bin/bash
 
-### Запрос через warp с ретраями: 3 попытки, таймаут 8с
-function fetch_warp {
+IFACE="awg"
+UNIT="awg-quick@awg"
+LANG_FILE="/opt/awg-native/lang"
+SCRIPT_LANG="en"
+[[ -f "$LANG_FILE" ]] && SCRIPT_LANG=$(cat "$LANG_FILE")
+
+function fetch_awg {
     local url="$1" out=""
+    local attempt
     for attempt in 1 2 3; do
-        out=$(curl -s --interface warp --max-time 8 "$url" 2>/dev/null)
-        [ -n "$out" ] && { echo "$out"; return 0; }
+        out=$(curl -s --interface "$IFACE" --max-time 8 "$url" 2>/dev/null)
+        [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
         sleep 1
     done
     return 1
 }
 
 function check_exit {
+    if [[ "$SCRIPT_LANG" == "ru" ]]; then
+        echo -e "\e[1;36mВыход через AmneziaWG:\e[0m"
+        local pending="проверяю выход..."
+        local provider="Провайдер"
+    else
+        echo -e "\e[1;36mExit through AmneziaWG:\e[0m"
+        local pending="checking exit..."
+        local provider="Provider"
+    fi
     echo -e "\e[1;35m──────────────────────────────────────\e[0m"
-    echo -e "\e[1;36mВыход через WARP:\e[0m"
-    printf "  \e[2;37m%s\e[0m\r" "проверяю выход..."
+    printf "  \e[2;37m%s\e[0m\r" "$pending"
 
     local ij ip1 co1 ci1 asn aj co2 isp cg
-    ij=$(fetch_warp https://ifconfig.co/json)
-    ip1=$(echo "$ij" | grep -oE '"ip":[ ]*"[^"]*"'      | cut -d'"' -f4)
+    ij=$(fetch_awg https://ifconfig.co/json)
+    ip1=$(echo "$ij" | grep -oE '"ip":[ ]*"[^"]*"' | cut -d'"' -f4)
     co1=$(echo "$ij" | grep -oE '"country":[ ]*"[^"]*"' | cut -d'"' -f4)
-    ci1=$(echo "$ij" | grep -oE '"city":[ ]*"[^"]*"'    | cut -d'"' -f4)
+    ci1=$(echo "$ij" | grep -oE '"city":[ ]*"[^"]*"' | cut -d'"' -f4)
     asn=$(echo "$ij" | grep -oE '"asn_org":[ ]*"[^"]*"' | cut -d'"' -f4)
 
-    aj=$(fetch_warp http://ip-api.com/json)
+    aj=$(fetch_awg http://ip-api.com/json)
     co2=$(echo "$aj" | grep -oE '"country":[ ]*"[^"]*"' | cut -d'"' -f4)
-    isp=$(echo "$aj" | grep -oE '"isp":[ ]*"[^"]*"'     | cut -d'"' -f4)
+    isp=$(echo "$aj" | grep -oE '"isp":[ ]*"[^"]*"' | cut -d'"' -f4)
 
-    printf "  \e[1;36mIP          \e[0m %s\n"  "${ip1:-—}"
+    printf "  \e[1;36mIP          \e[0m %s\n" "${ip1:-—}"
     printf "  \e[1;36mifconfig.co \e[0m %s%s\n" "${co1:-—}" "${ci1:+, $ci1}"
-    printf "  \e[1;36mip-api      \e[0m %s\n"  "${co2:-—}"
-    printf "  \e[1;36mПровайдер   \e[0m %s\n"  "${asn:-${isp:-—}}"
+    printf "  \e[1;36mip-api      \e[0m %s\n" "${co2:-—}"
+    printf "  \e[1;36m%s   \e[0m %s\n" "$provider" "${asn:-${isp:-—}}"
 
-    cg=$(fetch_warp https://chatgpt.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
+    cg=$(fetch_awg https://chatgpt.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
     printf "                      \r"
     local v
-    if [ -n "$cg" ]; then
+    if [[ -n "$cg" ]]; then
         if [[ "$cg" =~ ^(RU|CN|BY|IR|KP|CU|SY|VE)$ ]]; then
-            v="\e[1;31mнедоступен\e[0m ($cg)"
+            if [[ "$SCRIPT_LANG" == "ru" ]]; then
+                v="\e[1;31mнедоступен\e[0m ($cg)"
+            else
+                v="\e[1;31munavailable\e[0m ($cg)"
+            fi
         else
-            v="\e[1;32mдоступен\e[0m ($cg)"
+            if [[ "$SCRIPT_LANG" == "ru" ]]; then
+                v="\e[1;32mдоступен\e[0m ($cg)"
+            else
+                v="\e[1;32mavailable\e[0m ($cg)"
+            fi
         fi
     else
         v="—"
@@ -930,21 +1312,22 @@ function check_exit {
 function show_status {
     echo ""
     echo -e "\e[1;35m╭─────────────────────────────────────╮"
-    echo -e "│      \e[1;36m  W A R P - N A T I V E        \e[1;35m│"
-    echo -e "│     \e[2;37m       by distillium            \e[1;35m│"
+    echo -e "│      \e[1;36m   A W G - N A T I V E         \e[1;35m│"
+    echo -e "│     \e[2;37m      AmneziaWG 3.1            \e[1;35m│"
     echo -e "\e[1;35m╰─────────────────────────────────────╯\e[0m"
     echo ""
 
-    if systemctl is-active --quiet wg-quick@warp; then
+    local status tunnel_ip hs_ts age handshake endpoint
+    if systemctl is-active --quiet "$UNIT"; then
         status="\e[1;32mactive\e[0m"
     else
         status="\e[1;31minactive\e[0m"
     fi
 
-    tunnel_ip=$(ip addr show warp 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
-    [ -z "$tunnel_ip" ] && tunnel_ip="—"
+    tunnel_ip=$(ip addr show "$IFACE" 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
+    [[ -z "$tunnel_ip" ]] && tunnel_ip="—"
 
-    hs_ts=$(wg show warp latest-handshakes 2>/dev/null | awk '{print $2}')
+    hs_ts=$(awg show "$IFACE" latest-handshakes 2>/dev/null | awk '$2 > max { max = $2 } END { print max + 0 }')
     if [[ -n "$hs_ts" && "$hs_ts" -gt 0 ]]; then
         age=$(( $(date +%s) - hs_ts ))
         handshake="${age}s ago"
@@ -952,62 +1335,83 @@ function show_status {
         handshake="—"
     fi
 
-    account_type=$(wgcf --config /opt/warp-native/wgcf/wgcf-account.toml status 2>/dev/null | grep -i "Account type" | awk -F': ' '{print $2}' | xargs)
-    if [[ "$account_type" == "unlimited" ]]; then
-        account="WARP+"
-    elif [[ -n "$account_type" ]]; then
-        account="Free"
-    else
-        account="—"
-    fi
+    endpoint=$(awk -F= '/^[[:space:]]*Endpoint[[:space:]]*=/{ gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit }' /etc/amnezia/amneziawg/awg.conf 2>/dev/null)
+    [[ -z "$endpoint" ]] && endpoint="—"
 
-    echo -e "  \e[1;36mСтатус     :\e[0m $status"
-    echo -e "  \e[1;36mIP туннеля :\e[0m $tunnel_ip"
-    echo -e "  \e[1;36mHandshake  :\e[0m $handshake"
-    echo -e "  \e[1;36mАккаунт    :\e[0m $account"
+    if [[ "$SCRIPT_LANG" == "ru" ]]; then
+        echo -e "  \e[1;36mСтатус      :\e[0m $status"
+        echo -e "  \e[1;36mПрофиль     :\e[0m AmneziaWG 3.1"
+        echo -e "  \e[1;36mEndpoint    :\e[0m $endpoint"
+        echo -e "  \e[1;36mIP туннеля  :\e[0m $tunnel_ip"
+        echo -e "  \e[1;36mHandshake   :\e[0m $handshake"
+        local start_h="запустить" stop_h="остановить" restart_h="перезапустить"
+        local check_h="проверить выход" log_h="лог watchdog"
+    else
+        echo -e "  \e[1;36mStatus      :\e[0m $status"
+        echo -e "  \e[1;36mProfile     :\e[0m AmneziaWG 3.1"
+        echo -e "  \e[1;36mEndpoint    :\e[0m $endpoint"
+        echo -e "  \e[1;36mTunnel IP   :\e[0m $tunnel_ip"
+        echo -e "  \e[1;36mHandshake   :\e[0m $handshake"
+        local start_h="start" stop_h="stop" restart_h="restart"
+        local check_h="check the exit" log_h="watchdog log"
+    fi
     echo ""
 
-    if systemctl is-active --quiet wg-quick@warp; then
+    if systemctl is-active --quiet "$UNIT"; then
         check_exit
         echo ""
     fi
 
     echo -e "\e[1;35m──────────────────────────────────────\e[0m"
-    echo -e "  \e[1;32mwarp start\e[0m    — запустить"
-    echo -e "  \e[1;32mwarp stop\e[0m     — остановить"
-    echo -e "  \e[1;32mwarp restart\e[0m  — перезапустить"
-    echo -e "  \e[1;32mwarp check\e[0m    — проверить выход (IP, страна, ChatGPT)"
-    echo -e "  \e[1;32mwarp log\e[0m      — лог watchdog"
+    echo -e "  \e[1;32mawg-native start\e[0m    — ${start_h}"
+    echo -e "  \e[1;32mawg-native stop\e[0m     — ${stop_h}"
+    echo -e "  \e[1;32mawg-native restart\e[0m  — ${restart_h}"
+    echo -e "  \e[1;32mawg-native check\e[0m    — ${check_h}"
+    echo -e "  \e[1;32mawg-native log\e[0m      — ${log_h}"
     echo -e "\e[1;35m──────────────────────────────────────\e[0m"
     echo ""
 }
 
 case "$1" in
-    start)   systemctl start wg-quick@warp ;;
-    stop)    systemctl stop wg-quick@warp ;;
-    restart) systemctl restart wg-quick@warp ;;
+    start)   systemctl start "$UNIT" ;;
+    stop)    systemctl stop "$UNIT" ;;
+    restart) systemctl restart "$UNIT" ;;
     check)   check_exit ;;
     log)
-        if [[ ! -f /opt/warp-native/logs/watchdog.log ]]; then
-            echo "Лог пока пуст — watchdog ещё не запускался."
+        if [[ ! -f /opt/awg-native/logs/watchdog.log ]]; then
+            if [[ "$SCRIPT_LANG" == "ru" ]]; then
+                echo "Лог пока пуст — watchdog ещё не запускался."
+            else
+                echo "The log is empty — the watchdog has not run yet."
+            fi
         else
-            tail -f /opt/warp-native/logs/watchdog.log
+            tail -f /opt/awg-native/logs/watchdog.log
         fi
         ;;
-    *)       show_status ;;
+    *) show_status ;;
 esac
-WARP_CMD_EOF
-
-chmod +x /usr/local/bin/warp
-ok "$(msg "alias_created")"
+AWG_CMD_EOF
+chmod 755 /usr/local/bin/awg-native
+ok "$(msg "command_created")"
 echo ""
 
 INSTALL_COMPLETE=true
 
-tunnel_ip=$(ip addr show warp 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
+function fetch_awg {
+    local url="$1" out=""
+    local attempt
+    for attempt in 1 2 3; do
+        out=$(curl -s --interface "$IFACE" --max-time 8 "$url" 2>/dev/null)
+        [[ -n "$out" ]] && { printf '%s' "$out"; return 0; }
+        sleep 1
+    done
+    return 1
+}
+
+tunnel_ip=$(ip addr show "$IFACE" 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
 [[ -z "$tunnel_ip" ]] && tunnel_ip="—"
 
-final_handshake_ts=$(wg show warp latest-handshakes 2>/dev/null | awk '{print $2}')
+final_handshake_ts=$(awg show "$IFACE" latest-handshakes 2>/dev/null | awk '$2 > max { max = $2 } END { print max + 0 }')
 if [[ -n "$final_handshake_ts" && "$final_handshake_ts" -gt 0 ]]; then
     final_age=$(( $(date +%s) - final_handshake_ts ))
     handshake_display="${final_age} $(msg "summary_seconds_ago")"
@@ -1015,43 +1419,39 @@ else
     handshake_display="—"
 fi
 
-if [[ "$wgcf_account_type" == "unlimited" ]]; then
-    account_display="WARP+"
-elif [[ -n "$wgcf_account_type" ]]; then
-    account_display="Free"
-else
-    account_display="—"
-fi
+endpoint_display=$(awk -F= '/^[[:space:]]*Endpoint[[:space:]]*=/{ gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit }' "$CONF_FILE" 2>/dev/null)
+[[ -z "$endpoint_display" ]] && endpoint_display="—"
 
 echo ""
 ok "$(msg "installation_complete")"
 echo ""
 echo -e "\e[1;36m$(msg "summary_header")\e[0m"
-echo -e "\e[1;36m  $(msg "summary_account") \e[0m${account_display}"
+echo -e "\e[1;36m  $(msg "summary_proto") \e[0mAmneziaWG 3.1"
+echo -e "\e[1;36m  $(msg "summary_endpoint") \e[0m${endpoint_display}"
 echo -e "\e[1;36m  $(msg "summary_tunnel_ip") \e[0m${tunnel_ip}"
 echo -e "\e[1;36m  $(msg "summary_handshake") \e[0m${handshake_display}"
 echo -e "\e[1;36m$(msg "summary_footer")\e[0m"
 echo ""
 
-if systemctl is-active --quiet wg-quick@warp && wg show warp &>/dev/null; then
-    printf "\e[2;37m%s\e[0m\r" "проверяю выход..."
-    ij=$(fetch_warp https://ifconfig.co/json)
-    ip1=$(echo "$ij" | grep -oE '"ip":[ ]*"[^"]*"'      | cut -d'"' -f4)
+if systemctl is-active --quiet "$UNIT" && awg show "$IFACE" &>/dev/null; then
+    printf "\e[2;37m%s\e[0m\r" "..."
+    ij=$(fetch_awg https://ifconfig.co/json)
+    ip1=$(echo "$ij" | grep -oE '"ip":[ ]*"[^"]*"' | cut -d'"' -f4)
     co1=$(echo "$ij" | grep -oE '"country":[ ]*"[^"]*"' | cut -d'"' -f4)
-    ci1=$(echo "$ij" | grep -oE '"city":[ ]*"[^"]*"'    | cut -d'"' -f4)
+    ci1=$(echo "$ij" | grep -oE '"city":[ ]*"[^"]*"' | cut -d'"' -f4)
     asn=$(echo "$ij" | grep -oE '"asn_org":[ ]*"[^"]*"' | cut -d'"' -f4)
-    aj=$(fetch_warp http://ip-api.com/json)
+    aj=$(fetch_awg http://ip-api.com/json)
     co2=$(echo "$aj" | grep -oE '"country":[ ]*"[^"]*"' | cut -d'"' -f4)
-    isp=$(echo "$aj" | grep -oE '"isp":[ ]*"[^"]*"'     | cut -d'"' -f4)
-    cg=$(fetch_warp https://chatgpt.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
+    isp=$(echo "$aj" | grep -oE '"isp":[ ]*"[^"]*"' | cut -d'"' -f4)
+    cg=$(fetch_awg https://chatgpt.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
     printf "                      \r"
 
     echo -e "\e[1;36m$(msg "exit_header")\e[0m"
-    printf "  \e[1;36mIP          \e[0m %s\n"  "${ip1:-—}"
+    printf "  \e[1;36mIP          \e[0m %s\n" "${ip1:-—}"
     printf "  \e[1;36mifconfig.co \e[0m %s%s\n" "${co1:-—}" "${ci1:+, $ci1}"
-    printf "  \e[1;36mip-api      \e[0m %s\n"  "${co2:-—}"
-    printf "  \e[1;36mПровайдер   \e[0m %s\n"  "${asn:-${isp:-—}}"
-    if [ -n "$cg" ]; then
+    printf "  \e[1;36mip-api      \e[0m %s\n" "${co2:-—}"
+    printf "  \e[1;36mASN         \e[0m %s\n" "${asn:-${isp:-—}}"
+    if [[ -n "$cg" ]]; then
         if [[ "$cg" =~ ^(RU|CN|BY|IR|KP|CU|SY|VE)$ ]]; then
             printf "  \e[1;36mChatGPT     \e[0m \e[1;31m%s\e[0m (%s)\n" "$(msg "exit_unavail")" "$cg"
         else
@@ -1063,15 +1463,14 @@ if systemctl is-active --quiet wg-quick@warp && wg show warp &>/dev/null; then
     echo -e "\e[1;36m$(msg "summary_footer")\e[0m"
     echo ""
 
-    ### Вердикт: ни один сервис не ответил - реальная проблема связи
     if [[ -z "$ip1" && -z "$co2" && -z "$cg" ]]; then
         warn "$(msg "exit_unreachable")"
     fi
 fi
 
-echo -e "\e[1;32m➤ warp\e[0m — статус туннеля и управление"
+echo -e "\e[1;32m➤ awg-native\e[0m — статус туннеля и управление"
 echo ""
-echo -e "\e[1;36m➤ $(msg "disable_autostart"): \e[0msystemctl disable wg-quick@warp"
-echo -e "\e[1;36m➤ $(msg "enable_autostart_cmd"): \e[0msystemctl enable wg-quick@warp"
-echo -e "\e[1;36m➤ $(msg "watchdog_config"): \e[0mnano /opt/warp-native/config.env"
+echo -e "\e[1;36m➤ $(msg "disable_autostart"): \e[0msystemctl disable ${UNIT}"
+echo -e "\e[1;36m➤ $(msg "enable_autostart_cmd"): \e[0msystemctl enable ${UNIT}"
+echo -e "\e[1;36m➤ $(msg "watchdog_config"): \e[0m${STATE_DIR}/config.env"
 echo ""

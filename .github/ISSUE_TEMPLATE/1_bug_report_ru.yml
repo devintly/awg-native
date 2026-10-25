@@ -10,8 +10,8 @@ body:
       label: '⚠️ Обязательные условия'
       description: Прежде чем создавать новый issue, убедитесь, что вы выполнили следующее
       options:
-        - label: Я прочитал [README](https://github.com/distillium/warp-native/blob/main/README.md)
-        - label: Я проверил существующие [Issues](https://github.com/distillium/warp-native/issues)
+        - label: Я прочитал [README](https://github.com/devintly/awg-native/blob/main/README.md)
+        - label: Я проверил существующие [Issues](https://github.com/devintly/awg-native/issues)
         - label: Я обновился до последнего релиза
 
   - type: input
