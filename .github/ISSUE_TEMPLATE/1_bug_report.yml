@@ -10,8 +10,8 @@ body:
       label: '⚠️ Preconditions'
       description: Before creating a new issue, make sure you've done the following
       options:
-        - label: I have read the [README](https://github.com/distillium/warp-native/blob/main/README.md)
-        - label: I have checked existing [Issues](https://github.com/distillium/warp-native/issues)
+        - label: I have read the [README](https://github.com/devintly/awg-native/blob/main/README.md)
+        - label: I have checked existing [Issues](https://github.com/devintly/awg-native/issues)
 
   - type: input
     id: os

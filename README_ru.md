@@ -1,74 +1,54 @@
-<p aling="center"><a href="https://github.com/distillium/warp-native">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="./media/logo.png" />
-   <source media="(prefers-color-scheme: light)" srcset="./media/logo-black.png" />
-   <img alt="Warp Native" src="./media/logo.png" />
- </picture>
-</a></p>
-
 **🇺🇸 [English version](./README.md)**
 
-Этот скрипт устанавливает Cloudflare WARP в "нативном" режиме через `WireGuard`, как интерфейс, без использования `warp-cli`.
+Скрипт ставит клиент **AmneziaWG 3.1** так же, как нативный интерфейс WireGuard: `awg-quick` поднимает интерфейс `awg`, `Table = off` не трогает маршрут по умолчанию сервера, и трафик попадает в туннель только когда программа сама выбрала этот интерфейс.
 
-⚠️ Поддерживаются только системы на базе **Debian/Ubuntu**.
+⚠️ Только **Debian/Ubuntu** и ядро **6.7 или новее** (Ubuntu 24.04, Ubuntu 26.04, Debian 13). Профиль 3.1 требует `HeaderProtectionKey` и `S1`–`S4` не меньше 12.
 
-Он автоматизирует:
-- Установку необходимых пакетов
-- Скачивание и настройку `wgcf`
-- Проверку наличия ipv6 в системе
-- Генерацию и модификацию WireGuard-конфигурации
-- Подключение и проверку статуса
-- Включение автозапуска интерфейса `warp`
+Нужен готовый клиентский `.conf` с сервера или из приложения AmneziaWG. Скрипт не ставит сервер и не принимает ссылку `vpn://`.
+
+Он делает следующее:
+
+- Ставит `amneziawg` (модуль ядра и `awg` / `awg-quick`) из PPA Amnezia и проверяет, что модуль принимает профиль 3.1
+- Приводит клиентский профиль к схеме привязки интерфейса и сохраняет его в `/etc/amnezia/amneziawg/awg.conf`
+- Оставляет как есть `Jc`, `Jmin`, `Jmax`, `S1`–`S4`, `H1`–`H4`, `I1`–`I5`, `HeaderProtectionKey` и `ContentPaddingAddition`
+- Убирает DNS и `PreUp`/`PostUp`/`PreDown`/`PostDown`, ставит `Table = off` и `AllowedIPs = 0.0.0.0/0`, добавляет `PersistentKeepalive = 25`, если у пира его не было, и убирает IPv6 из `Address`
+- Включает автозапуск, watchdog и fail-closed kill-switch для метки `51888`
+
+`Table = off` оставляет SSH на обычном маршруте сервера. `AllowedIPs = 0.0.0.0/0` при этом позволяет интерфейсу шифровать IPv4, который отправили именно через `awg`.
 
 ---
 
-## 🚀 Способы установки
-
-### Вариант 1: Shell-скрипт (быстрая установка)
-
-Установка на каждую нужную ноду:
+## Установка
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/devintly/awg-native/main/install.sh)
 ```
 
-### Вариант 2: Ansible роль (рекомендуется для автоматизации)
+Установщик спрашивает путь к клиентскому `.conf` либо принимает вставку. Вставка заканчивается строкой, в которой только `END`.
 
-Для управления несколькими серверами используйте Ansible роль:
+Без вопросов:
 
-**Установка из Ansible Galaxy:**
 ```bash
-ansible-galaxy install themelbine.warp_native
+sudo AWG_LANG=ru AWG_CONF_FILE=/root/client.conf AWG_WATCHDOG_MINUTES=5 bash install.sh
 ```
 
-**GitHub репозиторий:** [ansible-role-warp-native](https://github.com/TheMelbine/ansible-role-warp-native)
+`AWG_WATCHDOG_MINUTES` — `5`, `10`, `15` или `30`.
 
-**Пример playbook:**
-```yaml
-- hosts: warp_servers
-  become: yes
-  roles:
-    - themelbine.warp_native
-  vars:
-    warp_native_state: present
-    warp_native_modify_resolv: true
-```
-
-## Шаблоны для конфигурации Xray
+## Xray
 
 <details>
-  <summary>📝 Показать пример outbound</summary>
+  <summary>Outbound</summary>
 
 ```json
 {
-  "tag": "warp-out",
+  "tag": "awg-out",
   "protocol": "freedom",
   "settings": {
     "domainStrategy": "ForceIPv4"
   },
   "streamSettings": {
     "sockopt": {
-      "interface": "warp",
+      "interface": "awg",
       "mark": 51888,
       "tcpFastOpen": true
     }
@@ -78,7 +58,7 @@ ansible-galaxy install themelbine.warp_native
 </details>
 
 <details>
-  <summary>📝 Показать пример routing rule</summary>
+  <summary>Правило маршрутизации</summary>
 
 ```json
 {
@@ -92,77 +72,60 @@ ansible-galaxy install themelbine.warp_native
     "Node-1",
     "Node-2"
   ],
-  "outboundTag": "warp-out"
+  "outboundTag": "awg-out"
 }
-
 ```
 </details>
 
-## Kill-switch WARP
+## Kill-switch
 
-Установщик включает `warp-native-killswitch.service`. Служба отбрасывает локально созданные пакеты с меткой `51888`, если выбранный для них выходной интерфейс отличается от `warp`. Это не позволяет маркированному WARP-трафику перейти на обычное сетевое подключение сервера, когда интерфейс `warp` недоступен.
+`awg-native-killswitch.service` отбрасывает локально созданные пакеты с меткой `51888`, если выбранный для них выходной интерфейс — не `awg`. Пока `awg` лежит, помеченный трафик не уходит в обычное подключение сервера.
 
-Защита действует только для outbound'ов Xray с той же меткой:
+Метка та же, что в outbound Xray:
 
 ```json
 "sockopt": {
-  "interface": "warp",
+  "interface": "awg",
   "mark": 51888
 }
 ```
 
-Удаление `mark` отключает kill-switch для этого outbound.
-Kill-switch управляет только собственной цепочкой nftables и восстанавливает её после штатного reload nftables. После ручной команды `nft flush ruleset` восстановите его:
+Без `mark` kill-switch для этого outbound не действует. Служба ведёт только свою цепочку nftables и восстанавливает её после штатного reload nftables. После ручного `nft flush ruleset` верните правило так:
 
 ```bash
 systemctl reload nftables
 ```
 
-Проверка статуса службы и активного правила:
-
 ```bash
-systemctl status warp-native-killswitch.service
-nft list chain inet warp_native warp_native_killswitch
+systemctl status awg-native-killswitch.service
+nft list chain inet awg_native awg_native_killswitch
 ```
 
-## Управление интерфейсом WARP
+## Интерфейс
 
-| Операция                    | Команда                             |
-|-----------------------------|-------------------------------------|
-| Проверить статус службы     | `systemctl status wg-quick@warp`    |
-| Посмотреть информацию (wg)  | `wg show warp`                      |
-| Остановить интерфейс        | `systemctl stop wg-quick@warp`      |
-| Запустить интерфейс         | `systemctl start wg-quick@warp`     |
-| Перезапустить интерфейс     | `systemctl restart wg-quick@warp`   |
-| Отключить автозапуск        | `systemctl disable wg-quick@warp`   |
-| Включить автозапуск         | `systemctl enable wg-quick@warp`    |
+| Действие | Команда |
+|---|---|
+| Статус и проверка выхода | `awg-native` |
+| Статус службы | `systemctl status awg-quick@awg` |
+| Состояние туннеля | `awg show awg` |
+| Остановить | `systemctl stop awg-quick@awg` |
+| Запустить | `systemctl start awg-quick@awg` |
+| Перезапустить | `systemctl restart awg-quick@awg` |
+| Выключить автозапуск | `systemctl disable awg-quick@awg` |
+| Включить автозапуск | `systemctl enable awg-quick@awg` |
+
+У `awg-native` также есть `start`, `stop`, `restart`, `check` и `log`.
 
 ## Удаление
 
-### Метод через shell-скрипт:
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/distillium/warp-native/main/uninstall.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/devintly/awg-native/main/uninstall.sh)
 ```
 
-### Метод через Ansible:
-```yaml
-- hosts: warp_servers
-  become: yes
-  roles:
-    - themelbine.warp_native
-  vars:
-    warp_native_state: absent
-```
+Другие файлы в `/etc/amnezia/amneziawg/` не удаляются. Если они есть, пакеты Amnezia остаются. Убираются только `awg.conf` и юниты этого установщика.
 
 ## Лицензия
 
-MIT License - подробности см. в файле [LICENSE](LICENSE).
+MIT. См. [LICENSE](LICENSE).
 
-## Автор
-
-Создано [distillium](https://github.com/distillium)
-
-## Поддержка языков
-
-Скрипт установки поддерживает интерактивный выбор языка. Во время установки вам будет предложено выбрать между английским и русским языками.
-
+Схема привязки интерфейса (без маршрута по умолчанию, метка, fail-closed kill-switch) взята из [warp-native](https://github.com/distillium/warp-native) автора [distillium](https://github.com/distillium).
